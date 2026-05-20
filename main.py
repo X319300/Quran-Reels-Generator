@@ -1019,8 +1019,12 @@ def process_auto_publish(ap_id):
                 if should_upload and scheduled_time:
                     db_update_auto_publish_item(ap_id, job_id, status='uploading')
                     
-                    title = generate_youtube_title(surah, start_ayah, end_ayah, title_template, reciter_name)
-                    description = generate_youtube_description(surah, start_ayah, end_ayah, desc_template, reciter_name)
+                    # Use per-item reciter name
+                    item_reciter = item.get('reciter', '') or reciter_id
+                    item_reciter_name = RECITERS_MAP.get(item_reciter, item_reciter)
+                    
+                    title = generate_youtube_title(surah, start_ayah, end_ayah, title_template, item_reciter_name)
+                    description = generate_youtube_description(surah, start_ayah, end_ayah, desc_template, item_reciter_name)
                     
                     print(f"[AutoPublish] [{i+1}/{total}] Uploading to YouTube: {title[:50]}...")
                     
@@ -3818,12 +3822,14 @@ def get_auto_publish_status():
     items_info = []
     for item in items:
         job = db_get_job(item['job_id'])
+        reciter_id = item.get('reciter', '')
         items_info.append({
             'position': item['position'],
             'surah': item['surah'],
             'startAyah': item['start_ayah'],
             'endAyah': item['end_ayah'],
-            'reciter': item.get('reciter', ''),
+            'reciter': reciter_id,
+            'reciterName': RECITERS_MAP.get(reciter_id, reciter_id) if reciter_id else '',
             'status': item['status'],
             'videoId': item.get('video_id'),
             'videoUrl': item.get('video_url'),

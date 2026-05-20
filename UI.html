@@ -1494,16 +1494,73 @@
                         </select>
                     </div>
 
-                    <!-- الخلفيات الديناميكية -->
-                    <div class="toggle-item" style="border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px 16px; margin-bottom: 18px;">
-                        <div class="toggle-info">
-                            <h4>الخلفيات الديناميكية</h4>
-                            <span>كل آية بخلفية مختلفة</span>
+                    <!-- ✨ خيارات بصرية -->
+                    <div class="toggle-group" style="margin-bottom: 18px;">
+                        <div class="toggle-item">
+                            <div class="toggle-info">
+                                <h4>الخلفيات الديناميكية</h4>
+                                <span>كل آية بخلفية مختلفة</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="ap-dynamic-bg" checked>
+                                <span class="switch-slider"></span>
+                            </label>
                         </div>
-                        <label class="switch">
-                            <input type="checkbox" id="ap-dynamic-bg" checked>
-                            <span class="switch-slider"></span>
-                        </label>
+                        <div class="toggle-item">
+                            <div class="toggle-info">
+                                <h4>توهج النص</h4>
+                                <span>تأثير هالة حول النص</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="ap-use-glow" checked>
+                                <span class="switch-slider"></span>
+                            </label>
+                        </div>
+                        <div class="toggle-item">
+                            <div class="toggle-info">
+                                <h4>تعتيم سينمائي</h4>
+                                <span>Vignette effect</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="ap-use-vignette" checked>
+                                <span class="switch-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- خيارات متقدمة -->
+                    <div class="advanced-toggle" onclick="toggleApAdvanced()">
+                        <span>⚡</span>
+                        <span>خيارات متقدمة</span>
+                    </div>
+                    
+                    <div class="advanced-options" id="apAdvancedOptions">
+                        <div class="form-group">
+                            <label class="form-label">📐 أبعاد الفيديو</label>
+                            <select class="form-select" id="ap-aspect-ratio">
+                                <option value="9:16">📱 9:16 - ريلز / تيك توك</option>
+                                <option value="1:1">⬜ 1:1 - سوير / انستجرام</option>
+                                <option value="16:9">🖥️ 16:9 - يوتيوب</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">✒️ خط المصحف</label>
+                            <select class="form-select" id="ap-font-select">
+                                <option value="Arabic">Arabic - الخط الافتراضي</option>
+                                <option value="Classic">Classic - كلاسيك</option>
+                                <option value="Amiri">Amiri - أميري</option>
+                                <option value="Uthmani">Uthmani - عثماني</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">🔤 خط الترجمة</label>
+                            <select class="form-select" id="ap-font-en-select">
+                                <option value="English">English - الافتراضي</option>
+                                <option value="Cinzel">Cinzel - كلاسيكي</option>
+                                <option value="Playfair">Playfair - أنيق</option>
+                                <option value="Lora">Lora - عصري</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
 
@@ -1514,22 +1571,24 @@
                     <!-- قالب العنوان -->
                     <div class="form-group">
                         <label class="form-label">📌 قالب العنوان</label>
-                        <input type="text" class="form-input" id="ap-title-template" value="Quran - {surah_name} ({ayah_range})" placeholder="مثال: Quran - {surah_name} ({ayah_range})">
+                        <input type="text" class="form-input" id="ap-title-template" value="Quran - {surah_name} ({ayah_range}) | {reciter}" placeholder="مثال: Quran - {surah_name} ({ayah_range})">
                         <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">
-                            المتاح: {surah_name}, {surah_number}, {ayah_range}, {reciter}
+                            المتاح: {surah_name}, {surah_number}, {ayah_range}, {start_ayah}, {end_ayah}, {reciter}
                         </div>
                     </div>
 
                     <!-- وصف الفيديو -->
                     <div class="form-group">
                         <label class="form-label">📝 وصف الفيديو</label>
-                        <textarea class="form-input" id="ap-description" style="height: 80px; padding: 12px 16px; resize: vertical;" placeholder="وصف اختياري للفيديو..."></textarea>
+                        <textarea class="form-input" id="ap-description" style="height: 80px; padding: 12px 16px; resize: vertical;" placeholder="وصف اختياري للفيديو...">قرآن كريم من سورة {surah_name} بصوت القارئ {reciter}
+
+#قران_كريم #قرآن #quran #تلاوة #قرآن_كريم</textarea>
                     </div>
 
                     <!-- التاغات -->
                     <div class="form-group">
-                        <label class="form-label">🏷️ التاغات (مفصولة بفاصلة)</label>
-                        <input type="text" class="form-input" id="ap-tags" value="قرآن, تلاوة, إسلام, Quran" placeholder="قرآن, تلاوة, إسلام">
+                        <label class="form-label">🏷️ الكلمات المفتاحية (مفصولة بفاصلة)</label>
+                        <input type="text" class="form-input" id="ap-tags" value="قرآن كريم, تلاوة, إسلام, Quran, قرآن, تلاوة قرآنية" placeholder="قرآن, تلاوة, إسلام">
                     </div>
                 </div>
 
@@ -1580,6 +1639,17 @@
 
                         <!-- Status -->
                         <div id="ap-status-text" style="font-size: 0.95rem; color: var(--text-secondary); margin-bottom: 12px;">في الانتظار...</div>
+
+                        <!-- Current Video Progress -->
+                        <div id="ap-current-video-section" style="display: none; margin-bottom: 12px;">
+                            <div style="font-size: 0.85rem; color: var(--accent); margin-bottom: 6px;">
+                                🎬 <span id="ap-current-video-name">--</span>
+                            </div>
+                            <div style="background: var(--bg-input); border-radius: 8px; height: 4px; overflow: hidden;">
+                                <div id="ap-current-video-bar" style="width: 0%; height: 100%; background: var(--success); border-radius: 8px; transition: width 0.3s ease;"></div>
+                            </div>
+                            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; text-align: left;" id="ap-current-video-percent">0%</div>
+                        </div>
 
                         <!-- Stats Grid -->
                         <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; margin-bottom: 12px;">
@@ -2112,6 +2182,11 @@
         function toggleBatchAdvanced() {
             const options = document.getElementById('batchAdvancedOptions');
             options.classList.toggle('show');
+        }
+
+        function toggleApAdvanced() {
+            const options = document.getElementById('apAdvancedOptions');
+            if (options) options.classList.toggle('show');
         }
 
         function toggleBatchSearchInput() {
@@ -3487,6 +3562,11 @@
             const quality = document.getElementById('ap-quality')?.value || '720';
             const fps = document.getElementById('ap-fps')?.value || '20';
             const dynamicBg = document.getElementById('ap-dynamic-bg')?.checked ?? true;
+            const useGlow = document.getElementById('ap-use-glow')?.checked ?? true;
+            const useVignette = document.getElementById('ap-use-vignette')?.checked ?? true;
+            const aspectRatio = document.getElementById('ap-aspect-ratio')?.value || '9:16';
+            const font = document.getElementById('ap-font-select')?.value || 'Arabic';
+            const fontEn = document.getElementById('ap-font-en-select')?.value || 'English';
             const titleTemplate = document.getElementById('ap-title-template')?.value || 'Quran - {surah_name} ({ayah_range})';
             const descriptionTemplate = document.getElementById('ap-description')?.value || '';
             const tags = document.getElementById('ap-tags')?.value?.split(',').map(t => t.trim()).filter(Boolean) || ['quran', 'قرآن'];
@@ -3503,11 +3583,9 @@
                     body: JSON.stringify({
                         sessionId: session,
                         count, reciters: selectedReciters, quality, fps, dynamicBg,
+                        useGlow, useVignette, aspectRatio, font, fontEn,
                         titleTemplate, descriptionTemplate, tags,
                         spreadDays, timeStartHour: timeStart, timeEndHour: timeEnd,
-                        aspectRatio: '9:16',
-                        useGlow: true, useVignette: true,
-                        font: 'Arabic', fontEn: 'English',
                     })
                 });
 
@@ -3549,7 +3627,7 @@
 
         function startAutoPublishPolling() {
             stopAutoPublishPolling();
-            autoPublishPolling = setInterval(pollAutoPublishStatus, 3000);
+            autoPublishPolling = setInterval(pollAutoPublishStatus, 2000);
             pollAutoPublishStatus();
         }
 
@@ -3573,12 +3651,52 @@
             if (completedEl) completedEl.textContent = ap.completedVideos || 0;
             if (uploadedEl) uploadedEl.textContent = ap.uploadedVideos || 0;
             if (failedEl) failedEl.textContent = ap.failedVideos || 0;
-            // Update countdown timer from server
-            if (ap.remainingTime !== null && ap.remainingTime !== undefined) {
-                const newCompleted = ap.completedVideos || 0;
-                if (newCompleted !== apLastCompleted) {
-                    apRemainingSeconds = ap.remainingTime;
-                    apLastCompleted = newCompleted;
+
+            // Find the currently generating item to show per-video progress
+            let currentItem = null;
+            if (ap.items) {
+                currentItem = ap.items.find(item => item.status === 'generating');
+            }
+
+            const currentVideoSection = document.getElementById('ap-current-video-section');
+            const currentVideoNameEl = document.getElementById('ap-current-video-name');
+            const currentVideoBarEl = document.getElementById('ap-current-video-bar');
+            const currentVideoPercentEl = document.getElementById('ap-current-video-percent');
+
+            if (currentItem && ap.status === 'running') {
+                if (currentVideoSection) currentVideoSection.style.display = 'block';
+                const surahName = SURAH_NAMES?.[currentItem.surah - 1] || `سورة ${currentItem.surah}`;
+                const recName = currentItem.reciterName || currentItem.reciter || '';
+                const videoName = `${surahName} (${currentItem.startAyah}-${currentItem.endAyah})${recName ? ' 🎤' + recName : ''}`;
+                if (currentVideoNameEl) currentVideoNameEl.textContent = videoName;
+                const itemPercent = currentItem.percent || 0;
+                if (currentVideoBarEl) currentVideoBarEl.style.width = itemPercent + '%';
+                if (currentVideoPercentEl) currentVideoPercentEl.textContent = itemPercent + '%';
+
+                // Status text shows current video info
+                if (statusEl) statusEl.textContent = `🔄 جاري تصميم الفيديو (${ap.completedVideos || 0}/${ap.totalVideos})`;
+            } else if (ap.status === 'running') {
+                // Running but no currently generating item (maybe uploading)
+                if (currentVideoSection) currentVideoSection.style.display = 'none';
+                if (statusEl) statusEl.textContent = `🔄 جاري المعالجة (${ap.completedVideos || 0}/${ap.totalVideos})`;
+            } else {
+                if (currentVideoSection) currentVideoSection.style.display = 'none';
+            }
+
+            // Calculate remaining time based on actual progress
+            if (ap.status === 'running') {
+                const done = (ap.completedVideos || 0) + (ap.failedVideos || 0);
+                const remainingVideos = ap.totalVideos - done;
+                // If a video is currently generating, factor in its progress
+                let effectiveRemaining = remainingVideos;
+                if (currentItem && currentItem.percent > 0) {
+                    effectiveRemaining = remainingVideos - 1 + (1 - currentItem.percent / 100);
+                }
+                // Estimate ~60 seconds per video generation + ~30 seconds per upload
+                const estimatedRemaining = Math.max(0, Math.round(effectiveRemaining * 90));
+                if (estimatedRemaining !== apRemainingSeconds || done !== apLastCompleted) {
+                    apRemainingSeconds = estimatedRemaining;
+                    apLastCompleted = done;
                 }
                 startApCountdown();
             } else {
@@ -3593,7 +3711,10 @@
                 'cancelled': '⚠️ ملغي',
                 'error': '❌ حدث خطأ'
             };
-            if (statusEl) statusEl.textContent = statusMap[ap.status] || ap.status;
+            // Only use statusMap for non-running statuses (we set running status above)
+            if (statusEl && ap.status !== 'running') {
+                statusEl.textContent = statusMap[ap.status] || ap.status;
+            }
 
             showAutoPublishProgress();
 
@@ -3605,7 +3726,8 @@
                     const statusBadge = getAPItemStatusBadge(item.status);
                     const scheduleStr = item.scheduledTime ? formatAPScheduleTime(item.scheduledTime) : '';
                     const ytLink = item.videoUrl ? `<a href="${item.videoUrl}" target="_blank" style="color: #22c55e; text-decoration: none; font-size: 12px;">YouTube ↗</a>` : '';
-                    const reciterName = item.reciter || '';
+                    const reciterName = item.reciterName || item.reciter || '';
+                    const itemPercent = item.status === 'generating' && item.percent > 0 ? ` <span style="color: var(--text-muted); font-size: 10px;">[${item.percent}%]</span>` : '';
 
                     return `
                         <div class="ap-item" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.05);">
@@ -3614,7 +3736,7 @@
                                 <div>
                                     <span style="font-size: 14px;">${surahName} (${item.startAyah}-${item.endAyah})</span>
                                     ${reciterName ? `<span style="color: var(--text-muted); font-size: 11px; margin-right: 6px;">🎤${reciterName}</span>` : ''}
-                                    ${statusBadge}
+                                    ${statusBadge}${itemPercent}
                                 </div>
                             </div>
                             <div style="text-align: left; display: flex; align-items: center; gap: 10px;">
@@ -3626,7 +3748,7 @@
                 }).join('');
             }
 
-            // Update progress ring and bar
+            // Update progress ring and bar based on overall completion
             const percent = ap.totalVideos > 0 ? Math.round(((ap.completedVideos || 0) / ap.totalVideos) * 100) : 0;
 
             const progressRing = document.getElementById('ap-progress-ring');
