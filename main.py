@@ -774,9 +774,10 @@ def estimate_ayah_duration_ms(surah, start_ayah, end_ayah, reciter_name=None):
 def generate_random_video_items(count, reciter_ids=None):
     """
     خوارزمية Sliding Window مضمونة 100% - مستحيل تطلع آية واحدة.
-    1. نحسب مدة كل آية في السورة
-    2. نلقي نظرة على كل النطاقات الممكنة (30-58 ثانية)
-    3. نختار واحد عشوائي مش متكرر
+    شرط النطاق الصالح:
+      1. المدة >= 30 ثانية
+      2. عدد الآيات >= 3 (حماية من تقدير خاطئ لآية واحدة)
+      3. المدة <= 58 ثانية
     Returns: list of {surah, startAyah, endAyah, reciter}
     """
     items = []
@@ -785,6 +786,7 @@ def generate_random_video_items(count, reciter_ids=None):
 
     MAX_DUR = 58.0  # ثانية
     MIN_DUR = 30.0  # ثانية
+    MIN_AYAHS = 3   # أقل عدد آيات (حماية من تقدير مدة خاطئ)
 
     # Cache: نحسب مدة الآيات مرة واحدة لكل سورة/قارئ
     _ayah_dur_cache = {}
@@ -806,13 +808,13 @@ def generate_random_video_items(count, reciter_ids=None):
     def find_valid_ranges_for_surah(surah, reciter):
         """
         Sliding Window O(n):
-        يرجّع كل النطاقات الصالحة (start, end) في السورة اللي مدتها 30-58 ثانية.
-        مستحيل يرجّع نطاق أقل من 30 ثانية.
+        يرجّع كل النطاقات الصالحة (start, end) في السورة.
+        3 شروط صارمة: مدة >= 30s و <= 58s و عدد آيات >= 3
         """
         durs = get_ayah_durations(surah, reciter)
         n = len(durs)
-        if n == 0:
-            return []
+        if n < MIN_AYAHS:
+            return []  # سورة أقل من 3 آيات مستحيل
 
         valid = []
         window_sum = 0.0
@@ -826,8 +828,9 @@ def generate_random_video_items(count, reciter_ids=None):
                 window_sum -= durs[left]
                 left += 1
 
-            # لو المدة 30 أو أكتر، ده نطاق صالح
-            if window_sum >= MIN_DUR and left <= right:
+            # ✅ 3 شروط صارمة - مستحيل تطلع آية واحدة
+            num_ayahs = right - left + 1
+            if window_sum >= MIN_DUR and window_sum <= MAX_DUR and num_ayahs >= MIN_AYAHS:
                 valid.append((left + 1, right + 1))  # 1-indexed
 
         return valid
@@ -858,6 +861,9 @@ def generate_random_video_items(count, reciter_ids=None):
             # اختيار عشوائي من النطاقات المتاحة
             start, end = random.choice(available)
             used_ranges.add(f"{surah}:{start}-{end}")
+
+            est_dur = sum(get_ayah_durations(surah, est_reciter)[start-1:end]) 
+            print(f"[Random] {start}-{end} ({end-start+1} ayahs, ~{est_dur:.0f}s)")
 
             reciter = random.choice(reciter_list) if reciter_list else ''
             items.append({
