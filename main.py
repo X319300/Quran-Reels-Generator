@@ -1158,7 +1158,20 @@ def process_auto_publish(ap_id):
                 failed = (ap_data['failed_videos'] or 0) + 1
                 db_update_auto_publish(ap_id, failed_videos=failed)
         
-        # Complete
+        # Mark items that were skipped due to cancellation
+        if ap_check and ap_check['status'] == 'cancelled':
+            for item in items:
+                if item['status'] == 'pending':
+                    db_update_auto_publish_item(ap_id, item['job_id'], status='cancelled')
+                    try:
+                        db_update_job(item['job_id'], status='cancelled', error='Auto-publish cancelled')
+                    except:
+                        pass
+            db_update_auto_publish(ap_id, completed_at=time.time())
+            print(f"[AutoPublish] Fully cancelled after {i}/{total} items")
+            return
+        
+        # Complete (only if not cancelled)
         db_update_auto_publish(ap_id, status='complete', completed_at=time.time())
         ap_final = db_get_auto_publish(ap_id)
         print(f"[AutoPublish] Complete: {ap_final['completed_videos']}/{total} generated, {ap_final['uploaded_videos']} uploaded, {ap_final['failed_videos']} failed")
@@ -1193,7 +1206,7 @@ def process_auto_publish_queue():
                             AUTO_PUBLISH_QUEUE.remove(ap_id)
                             continue
                         
-                        if ap['status'] in ['complete', 'cancelled']:
+                        if ap['status'] in ['complete', 'cancelled', 'error']:
                             AUTO_PUBLISH_QUEUE.remove(ap_id)
                             continue
                         
@@ -4068,20 +4081,39 @@ def list_auto_publishes():
 
 @app.route('/api/auto-publish/cancel', methods=['POST'])
 def cancel_auto_publish():
-    """Cancel an auto-publish batch"""
+    """Cancel an auto-publish batch - FULL cleanup"""
     d = request.json
     ap_id = d.get('autoPublishId')
     
     if not ap_id:
         return jsonify({'ok': False, 'error': 'autoPublishId required'}), 400
     
-    db_update_auto_publish(ap_id, status='cancelled')
+    # 1. تحديث الحالة
+    db_update_auto_publish(ap_id, status='cancelled', completed_at=time.time())
     
+    # 2. إيقاف كل الـ jobs اللي لسه pending (مش اتعملت بعد)
+    items = db_get_auto_publish_items(ap_id)
+    for item in items:
+        if item['status'] in ('pending', 'generating'):
+            try:
+                db_update_job(item['job_id'], status='cancelled', error='Auto-publish cancelled')
+            except:
+                pass
+            # تحديث حالة الـ item
+            db_update_auto_publish_item(ap_id, item['job_id'], status='cancelled')
+    
+    # 3. مسح الـ video files والـ workspaces للـ jobs اللي ملهاش لازمة
+    for item in items:
+        if item['status'] in ('pending', 'generating', 'cancelled'):
+            cleanup_job(item['job_id'])
+    
+    # 4. إزالة من الـ queue
     with AUTO_PUBLISH_LOCK:
         if ap_id in AUTO_PUBLISH_QUEUE:
             AUTO_PUBLISH_QUEUE.remove(ap_id)
     
-    return jsonify({'ok': True, 'message': 'Auto-publish cancelled'})
+    print(f"[AutoPublish] FULLY cancelled {ap_id[:8]} - cleaned {len(items)} items")
+    return jsonify({'ok': True, 'message': 'Auto-publish cancelled and cleaned up'})
 
 # ==========================================
 # 🚀 Application Startup (Correct Order!)
@@ -4146,6 +4178,7 @@ else:
         for ap in pending_ap:
             if ap['status'] == 'running':
                 db_update_auto_publish(ap['id'], status='pending')
+            # لا نستعيد الـ cancelled أبداً - مسحود تماماً
             with AUTO_PUBLISH_LOCK:
                 if ap['id'] not in AUTO_PUBLISH_QUEUE:
                     AUTO_PUBLISH_QUEUE.append(ap['id'])
