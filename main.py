@@ -123,6 +123,9 @@ os.makedirs(BASE_TEMP_DIR, exist_ok=True)
 os.makedirs(OUTPUTS_DIR, exist_ok=True)
 os.makedirs(VISION_DIR, exist_ok=True)
 
+# Rolling Cache: الحد الأقصى للفيديوهات المحفوظة في outputs
+MAX_CACHED_VIDEOS = 20
+
 # ==========================================
 # 🗄️ Database Setup (SQLite for Persistence)
 # ==========================================
@@ -422,6 +425,74 @@ def db_cleanup_old_jobs(hours=24):
     conn.commit()
     conn.close()
     print(f"🧹 Cleaned up {len(old_jobs)} old jobs and their video files")
+
+def rolling_video_cache(max_videos=None):
+    """
+    Rolling Cache: يحتفظ بآخر (max_videos) فيديو فقط في مجلد outputs.
+    لما يتضاف فيديو جديد، يحذف أقدم واحد (حتى لا يمتلئ السيرفر).
+    يُستدعى بعد كل فيديو يكتمل بنجاح.
+    """
+    if max_videos is None:
+        max_videos = MAX_CACHED_VIDEOS
+    
+    try:
+        # جلب كل الفيديوهات المكتملة مرتبة من الأقدم للأحدث
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute('''SELECT j.id, j.output_path, j.created_at, h.title
+                     FROM jobs j
+                     JOIN history h ON j.id = h.job_id
+                     WHERE j.status = 'complete' AND j.output_path IS NOT NULL
+                     ORDER BY j.created_at ASC''')
+        all_completed = c.fetchall()
+        conn.close()
+        
+        # لو عدد الفيديوهات أكتر من الحد المسموح، نحذف الأقدم
+        if len(all_completed) > max_videos:
+            to_delete = all_completed[:len(all_completed) - max_videos]
+            deleted_count = 0
+            deleted_size = 0
+            
+            for job in to_delete:
+                output_path = job['output_path']
+                if output_path and os.path.exists(output_path):
+                    try:
+                        file_size = os.path.getsize(output_path)
+                        os.remove(output_path)
+                        deleted_size += file_size
+                        deleted_count += 1
+                        print(f"[Rolling Cache] Deleted: {job['title']} ({file_size / 1024 / 1024:.1f} MB)")
+                    except Exception as e:
+                        print(f"[Rolling Cache] Failed to delete {output_path}: {e}")
+                
+                # مسح الـ workspace أيضاً لو موجود
+                conn2 = sqlite3.connect(DB_PATH)
+                c2 = conn2.cursor()
+                c2.execute("SELECT workspace FROM jobs WHERE id = ?", (job['id'],))
+                ws = c2.fetchone()
+                conn2.close()
+                
+                if ws and ws[0] and os.path.exists(ws[0]):
+                    try:
+                        shutil.rmtree(ws[0], ignore_errors=True)
+                    except:
+                        pass
+            
+            # تحديث الـ output_path في الـ database عشان نعرف إن الملف اتمسح
+            if to_delete:
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                for job in to_delete:
+                    c.execute("UPDATE jobs SET output_path = NULL WHERE id = ?", (job['id'],))
+                conn.commit()
+                conn.close()
+            
+            if deleted_count > 0:
+                print(f"[Rolling Cache] 🔄 Cleaned {deleted_count} old videos, freed {deleted_size / 1024 / 1024:.1f} MB")
+        
+    except Exception as e:
+        print(f"[Rolling Cache] Error: {e}")
 
 # ==========================================
 # 📦 Batch Job Management Functions
@@ -1027,6 +1098,9 @@ def process_auto_publish(ap_id):
                 completed = (ap_data['completed_videos'] or 0) + 1
                 db_update_auto_publish(ap_id, completed_videos=completed)
                 db_update_auto_publish_item(ap_id, job_id, status='generated')
+                
+                # ✅ Rolling Cache: حذف أقدم فيديو لو عددهم أكتر من 20
+                rolling_video_cache()
                 
                 # Upload to YouTube
                 if should_upload and scheduled_time:
@@ -2171,6 +2245,9 @@ def build_video_task(job_id, user_pexels_key, reciter_id, surah, start, end, qua
         
         # Update in SQLite and add to history
         db_update_job(job_id, output_path=final_output_path, status='complete', percent=100, completed_at=time.time())
+        
+        # ✅ Rolling Cache: حذف أقدم فيديو لو عددهم أكتر من 20
+        rolling_video_cache()
         
         # Get config from DB to add to history
         db_job = db_get_job(job_id)
