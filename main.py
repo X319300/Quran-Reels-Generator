@@ -251,6 +251,41 @@ def init_db():
         c.execute("ALTER TABLE batch_jobs ADD COLUMN avg_video_time REAL")
         print("✅ Added avg_video_time to batch_jobs table")
     
+    # Auto-publish table - for auto generate + upload to YouTube
+    c.execute('''CREATE TABLE IF NOT EXISTS auto_publish (
+        id TEXT PRIMARY KEY,
+        session_id TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        total_videos INTEGER DEFAULT 0,
+        completed_videos INTEGER DEFAULT 0,
+        failed_videos INTEGER DEFAULT 0,
+        uploaded_videos INTEGER DEFAULT 0,
+        video_config_json TEXT,
+        youtube_config_json TEXT,
+        schedule_config_json TEXT,
+        created_at REAL,
+        started_at REAL,
+        completed_at REAL
+    )''')
+    
+    # Auto-publish items table - individual videos in an auto-publish batch
+    c.execute('''CREATE TABLE IF NOT EXISTS auto_publish_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        auto_publish_id TEXT,
+        job_id TEXT,
+        position INTEGER,
+        surah INTEGER,
+        start_ayah INTEGER,
+        end_ayah INTEGER,
+        status TEXT DEFAULT 'pending',
+        video_id TEXT,
+        video_url TEXT,
+        scheduled_time TEXT,
+        upload_error TEXT,
+        created_at REAL,
+        FOREIGN KEY (auto_publish_id) REFERENCES auto_publish(id)
+    )''')
+    
     conn.commit()
     conn.close()
     print("✅ Database initialized successfully!")
@@ -464,6 +499,524 @@ def db_get_pending_batches():
     rows = c.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+# ==========================================
+# 🤖 Auto Publish - DB Helper Functions
+# ==========================================
+
+def db_create_auto_publish(ap_id, session_id, total_videos, video_config, youtube_config, schedule_config):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''INSERT INTO auto_publish (id, session_id, status, total_videos, video_config_json, youtube_config_json, schedule_config_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+              (ap_id, session_id, 'pending', total_videos, json.dumps(video_config), json.dumps(youtube_config), json.dumps(schedule_config), time.time()))
+    conn.commit()
+    conn.close()
+
+def db_update_auto_publish(ap_id, **kwargs):
+    if not kwargs:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    set_clause = ', '.join([f"{k} = ?" for k in kwargs.keys()])
+    values = list(kwargs.values()) + [ap_id]
+    c.execute(f"UPDATE auto_publish SET {set_clause} WHERE id = ?", values)
+    conn.commit()
+    conn.close()
+
+def db_get_auto_publish(ap_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT * FROM auto_publish WHERE id = ?", (ap_id,))
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def db_add_auto_publish_item(ap_id, job_id, position, surah, start_ayah, end_ayah):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''INSERT INTO auto_publish_items (auto_publish_id, job_id, position, surah, start_ayah, end_ayah, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+              (ap_id, job_id, position, surah, start_ayah, end_ayah, 'pending', time.time()))
+    conn.commit()
+    conn.close()
+
+def db_update_auto_publish_item(ap_id, job_id, **kwargs):
+    if not kwargs:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    set_clause = ', '.join([f"{k} = ?" for k in kwargs.keys()])
+    values = list(kwargs.values()) + [ap_id, job_id]
+    c.execute(f"UPDATE auto_publish_items SET {set_clause} WHERE auto_publish_id = ? AND job_id = ?", values)
+    conn.commit()
+    conn.close()
+
+def db_get_auto_publish_items(ap_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT * FROM auto_publish_items WHERE auto_publish_id = ? ORDER BY position", (ap_id,))
+    rows = c.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+def db_get_pending_auto_publishes():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT * FROM auto_publish WHERE status IN ('pending', 'running')")
+    rows = c.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+# ==========================================
+# 🤖 Auto Publish - Schedule & Video Generation
+# ==========================================
+
+def generate_random_schedule(total_videos, schedule_config):
+    """
+    Generate random publish times for videos.
+    schedule_config: {
+        spreadDays: int (how many days to spread videos over),
+        timeStartHour: int (e.g., 14 for 2pm),
+        timeEndHour: int (e.g., 22 for 10pm),
+        timezone: str (e.g., 'Africa/Cairo')
+    }
+    Returns: list of ISO datetime strings in UTC
+    """
+    spread_days = schedule_config.get('spreadDays', 7)
+    time_start = schedule_config.get('timeStartHour', 14)
+    time_end = schedule_config.get('timeEndHour', 22)
+    
+    if time_end <= time_start:
+        time_end = time_start + 8  # fallback
+    
+    from datetime import datetime, timezone, timedelta
+    
+    # Generate random times
+    now = datetime.now(timezone.utc)
+    start_date = now + timedelta(hours=1)  # Start 1 hour from now minimum
+    
+    # Calculate total slots
+    hours_per_day = time_end - time_start
+    total_hours = spread_days * hours_per_day
+    
+    # Evenly distribute with random jitter
+    base_interval = total_hours / total_videos if total_videos > 0 else 1
+    
+    schedule_times = []
+    current = start_date
+    
+    for i in range(total_videos):
+        # Add base interval + random jitter (up to ±30%)
+        jitter = base_interval * random.uniform(-0.3, 0.3)
+        current = start_date + timedelta(hours=base_interval * i + jitter)
+        
+        # Set to random time within the allowed hours
+        days_offset = i // max(1, (total_videos // spread_days))
+        current_date = (start_date + timedelta(days=days_offset)).replace(
+            hour=random.randint(time_start, time_end - 1),
+            minute=random.randint(0, 59),
+            second=0,
+            microsecond=0
+        )
+        
+        # Ensure minimum 30 min from now and between videos
+        min_time = now + timedelta(minutes=30)
+        if schedule_times:
+            last_time = datetime.fromisoformat(schedule_times[-1].replace('Z', '+00:00'))
+            min_time = max(min_time, last_time + timedelta(minutes=30))
+        
+        if current_date < min_time:
+            current_date = min_time + timedelta(minutes=random.randint(5, 30))
+        
+        # Ensure within spread window
+        max_time = start_date + timedelta(days=spread_days)
+        if current_date > max_time:
+            current_date = max_time - timedelta(minutes=random.randint(0, 60))
+        
+        schedule_times.append(current_date.strftime('%Y-%m-%dT%H:%M:%S.000Z'))
+    
+    # Sort and ensure uniqueness
+    schedule_times.sort()
+    return schedule_times
+
+def generate_random_video_items(count, reciter_id):
+    """
+    Generate random surah/ayah combinations targeting ~60 second videos.
+    Avoids duplicates and tries to pick diverse surahs.
+    Returns: list of {surah, startAyah, endAyah}
+    """
+    items = []
+    used_ranges = set()
+    
+    # Prefer shorter surahs for reels (surah 78-114 are good candidates)
+    # Also include some medium surahs (36, 55, 56, 67)
+    preferred_surahs = list(range(78, 115)) + [36, 55, 56, 67, 50, 73, 74, 75, 76, 77, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114]
+    
+    for _ in range(count):
+        attempts = 0
+        while attempts < 50:
+            attempts += 1
+            
+            # Pick a surah (70% chance from preferred, 30% from all)
+            if random.random() < 0.7 and preferred_surahs:
+                surah = random.choice(preferred_surahs)
+            else:
+                surah = random.randint(1, 114)
+            
+            verse_count = VERSE_COUNTS.get(surah, 20)
+            
+            # Pick start ayah
+            start = random.randint(1, max(1, verse_count))
+            
+            # Determine how many ayahs (target ~3-8 ayahs for ~60 seconds)
+            max_ayahs = min(10, verse_count - start + 1)
+            num_ayahs = random.randint(max(1, min(3, max_ayahs)), max(1, min(8, max_ayahs)))
+            end = min(start + num_ayahs - 1, verse_count)
+            
+            # Check for duplicates
+            range_key = f"{surah}:{start}-{end}"
+            if range_key not in used_ranges:
+                used_ranges.add(range_key)
+                items.append({
+                    'surah': surah,
+                    'startAyah': start,
+                    'endAyah': end
+                })
+                break
+        else:
+            # Fallback: just pick a short surah fully
+            surah = random.choice([112, 113, 114, 108, 109, 110, 111])
+            verse_count = VERSE_COUNTS.get(surah, 6)
+            items.append({
+                'surah': surah,
+                'startAyah': 1,
+                'endAyah': verse_count
+            })
+    
+    return items
+
+def direct_youtube_upload(session_id, video_path, title, description, tags, schedule_time=None):
+    """
+    Upload a video to YouTube directly (internal function, not API endpoint).
+    Returns: {ok: bool, videoId: str, videoUrl: str, error: str}
+    """
+    from googleapiclient.http import MediaFileUpload
+    from googleapiclient.errors import HttpError
+    from datetime import datetime, timezone, timedelta
+    
+    youtube = get_youtube_service(session_id)
+    if not youtube:
+        return {'ok': False, 'error': 'Not authorized with YouTube', 'needsAuth': True}
+    
+    if not os.path.exists(video_path):
+        return {'ok': False, 'error': 'Video file not found'}
+    
+    try:
+        actual_privacy = 'private'
+        publish_at = None
+        
+        if schedule_time:
+            try:
+                local_dt = datetime.fromisoformat(schedule_time.replace('Z', '+00:00'))
+                utc_dt = local_dt.astimezone(timezone.utc).replace(tzinfo=None)
+                now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+                min_time = now_utc + timedelta(minutes=30)
+                
+                if utc_dt < min_time:
+                    utc_dt = now_utc + timedelta(hours=1)
+                
+                publish_at = utc_dt.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+            except Exception as e:
+                print(f"[AutoPublish] Schedule time error: {e}")
+        
+        body = {
+            'snippet': {
+                'title': title[:100],
+                'description': description[:5000],
+                'tags': tags[:500],
+                'categoryId': '22'
+            },
+            'status': {
+                'privacyStatus': 'private' if publish_at else actual_privacy,
+                'selfDeclaredMadeForKids': False
+            }
+        }
+        
+        if publish_at:
+            body['status']['publishAt'] = publish_at
+        
+        media = MediaFileUpload(
+            video_path,
+            mimetype='video/mp4',
+            resumable=True,
+            chunksize=1024 * 1024
+        )
+        
+        request_obj = youtube.videos().insert(
+            part=','.join(body.keys()),
+            body=body,
+            media_body=media
+        )
+        
+        response = request_obj.execute()
+        video_id = response['id']
+        
+        return {
+            'ok': True,
+            'videoId': video_id,
+            'videoUrl': f"https://www.youtube.com/watch?v={video_id}",
+            'scheduled': bool(publish_at),
+            'scheduledTime': publish_at
+        }
+        
+    except HttpError as e:
+        error_body = json.loads(e.content.decode('utf-8'))
+        error_msg = error_body.get('error', {}).get('message', str(e))
+        return {'ok': False, 'error': error_msg}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+
+# ==========================================
+# 🤖 Auto Publish - Queue Processor
+# ==========================================
+
+AUTO_PUBLISH_QUEUE = []
+AUTO_PUBLISH_LOCK = threading.Lock()
+ACTIVE_AUTO_PUBLISH = {}
+MAX_PARALLEL_AUTO_PUBLISH = 1  # Only one auto-publish at a time (to respect YouTube API limits)
+
+def generate_youtube_title(surah, start_ayah, end_ayah, title_template, reciter_name=None):
+    """Generate YouTube title from template"""
+    surah_name = SURAH_NAMES[surah - 1] if 1 <= surah <= len(SURAH_NAMES) else f"سورة {surah}"
+    
+    ayah_range = f"{start_ayah}-{end_ayah}" if start_ayah != end_ayah else str(start_ayah)
+    
+    title = title_template.replace('{surah_name}', surah_name)
+    title = title.replace('{surah_number}', str(surah))
+    title = title.replace('{ayah_range}', ayah_range)
+    title = title.replace('{start_ayah}', str(start_ayah))
+    title = title.replace('{end_ayah}', str(end_ayah))
+    if reciter_name:
+        title = title.replace('{reciter}', reciter_name)
+    
+    return title
+
+def generate_youtube_description(surah, start_ayah, end_ayah, desc_template, reciter_name=None):
+    """Generate YouTube description from template"""
+    surah_name = SURAH_NAMES[surah - 1] if 1 <= surah <= len(SURAH_NAMES) else f"سورة {surah}"
+    ayah_range = f"{start_ayah}-{end_ayah}" if start_ayah != end_ayah else str(start_ayah)
+    
+    desc = desc_template.replace('{surah_name}', surah_name)
+    desc = desc.replace('{surah_number}', str(surah))
+    desc = desc.replace('{ayah_range}', ayah_range)
+    desc = desc.replace('{start_ayah}', str(start_ayah))
+    desc = desc.replace('{end_ayah}', str(end_ayah))
+    if reciter_name:
+        desc = desc.replace('{reciter}', reciter_name)
+    
+    return desc
+
+def process_auto_publish(ap_id):
+    """Process a single auto-publish batch: generate → upload → schedule"""
+    try:
+        print(f"[AutoPublish] Starting auto-publish: {ap_id[:8]}...")
+        db_update_auto_publish(ap_id, status='running', started_at=time.time())
+        
+        ap = db_get_auto_publish(ap_id)
+        if not ap:
+            return
+        
+        video_config = json.loads(ap['video_config_json'])
+        youtube_config = json.loads(ap['youtube_config_json'])
+        schedule_config = json.loads(ap['schedule_config_json'])
+        session_id = ap['session_id']
+        
+        items = db_get_auto_publish_items(ap_id)
+        total = len(items)
+        print(f"[AutoPublish] {total} videos to process")
+        
+        # Generate schedule times upfront
+        schedule_times = generate_random_schedule(total, schedule_config)
+        
+        # Get reciter name
+        reciter_id = video_config.get('reciter', '')
+        reciter_name = RECITERS_MAP.get(reciter_id, reciter_id)
+        
+        title_template = youtube_config.get('titleTemplate', 'Quran - {surah_name} ({ayah_range})')
+        desc_template = youtube_config.get('descriptionTemplate', '')
+        tags = youtube_config.get('tags', [])
+        should_upload = youtube_config.get('upload', True)
+        
+        for i, item in enumerate(items):
+            # Check cancellation
+            ap_check = db_get_auto_publish(ap_id)
+            if ap_check and ap_check['status'] == 'cancelled':
+                print(f"[AutoPublish] Cancelled")
+                break
+            
+            job_id = item['job_id']
+            surah = item['surah']
+            start_ayah = item['start_ayah']
+            end_ayah = item['end_ayah']
+            scheduled_time = schedule_times[i] if i < len(schedule_times) else None
+            
+            # Update item status
+            db_update_auto_publish_item(ap_id, job_id, status='generating')
+            
+            # Generate video
+            try:
+                job = db_get_job(job_id)
+                config = json.loads(job['config_json']) if job and job.get('config_json') else video_config.copy()
+                config['surah'] = surah
+                config['startAyah'] = start_ayah
+                config['endAyah'] = end_ayah
+                
+                random_bg_query = random.choice(SAFE_TOPICS)
+                
+                style_settings = config.get('style', {})
+                
+                print(f"[AutoPublish] [{i+1}/{total}] Generating: Surah {surah}, Ayah {start_ayah}-{end_ayah}")
+                
+                build_video_task(
+                    job_id,
+                    config.get('pexelsKey', ''),
+                    config.get('reciter', ''),
+                    surah,
+                    start_ayah,
+                    end_ayah,
+                    config.get('quality', '720'),
+                    random_bg_query,
+                    int(config.get('fps', 20)),
+                    config.get('dynamicBg', True),
+                    config.get('useGlow', True),
+                    config.get('useVignette', True),
+                    config.get('aspectRatio', '9:16'),
+                    style_settings,
+                    config.get('font', 'Arabic'),
+                    config.get('fontEn', 'English')
+                )
+                
+                # Check if generation succeeded
+                updated_job = db_get_job(job_id)
+                output_path = updated_job.get('output_path') if updated_job else None
+                
+                if not output_path or not os.path.exists(output_path):
+                    raise Exception("Video generation failed - no output file")
+                
+                # Update completed count
+                ap_data = db_get_auto_publish(ap_id)
+                completed = (ap_data['completed_videos'] or 0) + 1
+                db_update_auto_publish(ap_id, completed_videos=completed)
+                db_update_auto_publish_item(ap_id, job_id, status='generated')
+                
+                # Upload to YouTube
+                if should_upload and scheduled_time:
+                    db_update_auto_publish_item(ap_id, job_id, status='uploading')
+                    
+                    title = generate_youtube_title(surah, start_ayah, end_ayah, title_template, reciter_name)
+                    description = generate_youtube_description(surah, start_ayah, end_ayah, desc_template, reciter_name)
+                    
+                    print(f"[AutoPublish] [{i+1}/{total}] Uploading to YouTube: {title[:50]}...")
+                    
+                    upload_result = direct_youtube_upload(
+                        session_id, output_path, title, description, tags, scheduled_time
+                    )
+                    
+                    if upload_result['ok']:
+                        ap_data = db_get_auto_publish(ap_id)
+                        uploaded = (ap_data['uploaded_videos'] or 0) + 1
+                        db_update_auto_publish(ap_id, uploaded_videos=uploaded)
+                        db_update_auto_publish_item(
+                            ap_id, job_id,
+                            status='published',
+                            video_id=upload_result.get('videoId', ''),
+                            video_url=upload_result.get('videoUrl', ''),
+                            scheduled_time=scheduled_time
+                        )
+                        print(f"[AutoPublish] [{i+1}/{total}] Published! Scheduled: {scheduled_time}")
+                    else:
+                        db_update_auto_publish_item(
+                            ap_id, job_id,
+                            status='upload_failed',
+                            upload_error=upload_result.get('error', 'Unknown error'),
+                            scheduled_time=scheduled_time
+                        )
+                        ap_data = db_get_auto_publish(ap_id)
+                        failed = (ap_data['failed_videos'] or 0) + 1
+                        db_update_auto_publish(ap_id, failed_videos=failed)
+                        print(f"[AutoPublish] [{i+1}/{total}] Upload failed: {upload_result.get('error', '')}")
+                else:
+                    # Just generated, no upload
+                    db_update_auto_publish_item(ap_id, job_id, status='generated', scheduled_time=scheduled_time)
+                    print(f"[AutoPublish] [{i+1}/{total}] Generated (no upload)")
+                
+            except Exception as e:
+                print(f"[AutoPublish] [{i+1}/{total}] Error: {e}")
+                traceback.print_exc()
+                db_update_auto_publish_item(ap_id, job_id, status='error', upload_error=str(e))
+                ap_data = db_get_auto_publish(ap_id)
+                failed = (ap_data['failed_videos'] or 0) + 1
+                db_update_auto_publish(ap_id, failed_videos=failed)
+        
+        # Complete
+        db_update_auto_publish(ap_id, status='complete', completed_at=time.time())
+        ap_final = db_get_auto_publish(ap_id)
+        print(f"[AutoPublish] Complete: {ap_final['completed_videos']}/{total} generated, {ap_final['uploaded_videos']} uploaded, {ap_final['failed_videos']} failed")
+        
+    except Exception as e:
+        print(f"[AutoPublish] Fatal error: {e}")
+        traceback.print_exc()
+        db_update_auto_publish(ap_id, status='error', completed_at=time.time())
+    
+    finally:
+        with AUTO_PUBLISH_LOCK:
+            if ap_id in ACTIVE_AUTO_PUBLISH:
+                del ACTIVE_AUTO_PUBLISH[ap_id]
+        print(f"[AutoPublish] Released slot for {ap_id[:8]}...")
+
+def process_auto_publish_queue():
+    """Monitor auto-publish queue and start processing"""
+    print("[AutoPublish] Queue monitor started")
+    
+    while True:
+        try:
+            active_count = len(ACTIVE_AUTO_PUBLISH)
+            
+            if active_count < MAX_PARALLEL_AUTO_PUBLISH:
+                with AUTO_PUBLISH_LOCK:
+                    for ap_id in AUTO_PUBLISH_QUEUE[:]:
+                        if ap_id in ACTIVE_AUTO_PUBLISH:
+                            continue
+                        
+                        ap = db_get_auto_publish(ap_id)
+                        if not ap:
+                            AUTO_PUBLISH_QUEUE.remove(ap_id)
+                            continue
+                        
+                        if ap['status'] in ['complete', 'cancelled']:
+                            AUTO_PUBLISH_QUEUE.remove(ap_id)
+                            continue
+                        
+                        if ap['status'] == 'pending':
+                            ACTIVE_AUTO_PUBLISH[ap_id] = True
+                            print(f"[AutoPublish] Starting {ap_id[:8]}...")
+                            
+                            t = threading.Thread(
+                                target=process_auto_publish,
+                                args=(ap_id,),
+                                daemon=True
+                            )
+                            t.start()
+                            break
+            
+            time.sleep(2)
+        except Exception as e:
+            print(f"[AutoPublish] Queue error: {e}")
+            time.sleep(3)
 
 # Data Constants
 VERSE_COUNTS = {1: 7, 2: 286, 3: 200, 4: 176, 5: 120, 6: 165, 7: 206, 8: 75, 9: 129, 10: 109, 11: 123, 12: 111, 13: 43, 14: 52, 15: 99, 16: 128, 17: 111, 18: 110, 19: 98, 20: 135, 21: 112, 22: 78, 23: 118, 24: 64, 25: 77, 26: 227, 27: 93, 28: 88, 29: 69, 30: 60, 31: 34, 32: 30, 33: 73, 34: 54, 35: 45, 36: 83, 37: 182, 38: 88, 39: 75, 40: 85, 41: 54, 42: 53, 43: 89, 44: 59, 45: 37, 46: 35, 47: 38, 48: 29, 49: 18, 50: 45, 51: 60, 52: 49, 53: 62, 54: 55, 55: 78, 56: 96, 57: 29, 58: 22, 59: 24, 60: 13, 61: 14, 62: 11, 63: 11, 64: 18, 65: 12, 66: 12, 67: 30, 68: 52, 69: 52, 70: 44, 71: 28, 72: 28, 73: 20, 74: 56, 75: 40, 76: 31, 77: 50, 78: 40, 79: 46, 80: 42, 81: 29, 82: 19, 83: 36, 84: 25, 85: 22, 86: 17, 87: 19, 88: 26, 89: 30, 90: 20, 91: 15, 92: 21, 93: 11, 94: 8, 95: 8, 96: 19, 97: 5, 98: 8, 99: 8, 100: 11, 101: 11, 102: 8, 103: 3, 104: 9, 105: 5, 106: 4, 107: 7, 108: 3, 109: 6, 110: 3, 111: 5, 112: 4, 113: 5, 114: 6}
@@ -3049,6 +3602,198 @@ def youtube_disconnect():
     return jsonify({'ok': True})
 
 # ==========================================
+# 🤖 Auto Publish - API Endpoints
+# ==========================================
+
+@app.route('/api/auto-publish/create', methods=['POST'])
+@limiter.limit("2 per hour")
+def create_auto_publish():
+    """Create auto-publish batch: generate videos + upload to YouTube with random scheduling"""
+    d = request.json
+    session_id = d.get('sessionId')
+    
+    if not session_id:
+        return jsonify({'ok': False, 'error': 'sessionId required'}), 400
+    
+    # Check YouTube authorization
+    if session_id not in YOUTUBE_TOKENS:
+        return jsonify({'ok': False, 'error': 'YouTube not authorized. Please connect your YouTube account first.', 'needsAuth': True}), 401
+    
+    count = d.get('count', 10)
+    if count < 1 or count > 500:
+        return jsonify({'ok': False, 'error': 'Count must be between 1 and 500'}), 400
+    
+    # Video generation config
+    video_config = {
+        'reciter': d.get('reciter', ''),
+        'quality': d.get('quality', '720'),
+        'fps': d.get('fps', '20'),
+        'dynamicBg': d.get('dynamicBg', True),
+        'useGlow': d.get('useGlow', True),
+        'useVignette': d.get('useVignette', True),
+        'aspectRatio': d.get('aspectRatio', '9:16'),
+        'font': d.get('font', 'Arabic'),
+        'fontEn': d.get('fontEn', 'English'),
+        'pexelsKey': d.get('pexelsKey', ''),
+        'style': d.get('style', {}),
+    }
+    
+    # YouTube upload config
+    youtube_config = {
+        'titleTemplate': d.get('titleTemplate', 'Quran - {surah_name} ({ayah_range})'),
+        'descriptionTemplate': d.get('descriptionTemplate', ''),
+        'tags': d.get('tags', ['quran', 'قرآن', 'islam']),
+        'upload': d.get('upload', True),
+    }
+    
+    # Schedule config
+    schedule_config = {
+        'spreadDays': d.get('spreadDays', 7),
+        'timeStartHour': d.get('timeStartHour', 14),
+        'timeEndHour': d.get('timeEndHour', 22),
+        'timezone': d.get('timezone', 'Africa/Cairo'),
+    }
+    
+    # Generate random video items
+    reciter_id = d.get('reciter', '')
+    video_items = generate_random_video_items(count, reciter_id)
+    
+    # Create auto-publish record
+    ap_id = str(uuid.uuid4())
+    db_create_auto_publish(ap_id, session_id, count, video_config, youtube_config, schedule_config)
+    
+    # Create jobs for each video
+    for i, item in enumerate(video_items):
+        job_config = video_config.copy()
+        job_config['surah'] = item['surah']
+        job_config['startAyah'] = item['startAyah']
+        job_config['endAyah'] = item['endAyah']
+        job_config['session_id'] = session_id
+        
+        job_id = create_job(job_config, session_id)
+        db_add_auto_publish_item(ap_id, job_id, i, item['surah'], item['startAyah'], item['endAyah'])
+    
+    # Add to queue
+    with AUTO_PUBLISH_LOCK:
+        if ap_id not in AUTO_PUBLISH_QUEUE:
+            AUTO_PUBLISH_QUEUE.append(ap_id)
+    
+    print(f"[AutoPublish] Created: {ap_id[:8]}... with {count} videos")
+    
+    return jsonify({
+        'ok': True,
+        'autoPublishId': ap_id,
+        'totalVideos': count,
+        'items': video_items[:10],  # Show first 10 as preview
+        'message': f'تم إنشاء {count} فيديو - جاري المعالجة والجدولة التلقائية'
+    })
+
+@app.route('/api/auto-publish/status')
+def get_auto_publish_status():
+    """Get auto-publish progress"""
+    ap_id = request.args.get('autoPublishId')
+    
+    if not ap_id:
+        return jsonify({'ok': False, 'error': 'autoPublishId required'}), 400
+    
+    ap = db_get_auto_publish(ap_id)
+    if not ap:
+        return jsonify({'ok': False, 'error': 'Auto-publish not found'}), 404
+    
+    items = db_get_auto_publish_items(ap_id)
+    
+    items_info = []
+    for item in items:
+        job = db_get_job(item['job_id'])
+        items_info.append({
+            'position': item['position'],
+            'surah': item['surah'],
+            'startAyah': item['start_ayah'],
+            'endAyah': item['end_ayah'],
+            'status': item['status'],
+            'videoId': item.get('video_id'),
+            'videoUrl': item.get('video_url'),
+            'scheduledTime': item.get('scheduled_time'),
+            'uploadError': item.get('upload_error'),
+            'percent': job.get('percent', 0) if job else 0,
+        })
+    
+    # Calculate remaining time
+    remaining = None
+    if ap['status'] == 'running':
+        done = (ap['completed_videos'] or 0) + (ap['failed_videos'] or 0)
+        remaining_videos = ap['total_videos'] - done
+        # Estimate ~60 seconds per video generation + ~30 seconds per upload
+        remaining = int(remaining_videos * 90)
+    
+    return jsonify({
+        'ok': True,
+        'autoPublish': {
+            'id': ap['id'],
+            'status': ap['status'],
+            'totalVideos': ap['total_videos'],
+            'completedVideos': ap['completed_videos'],
+            'failedVideos': ap['failed_videos'],
+            'uploadedVideos': ap['uploaded_videos'],
+            'createdAt': ap['created_at'],
+            'startedAt': ap.get('started_at'),
+            'completedAt': ap.get('completed_at'),
+            'remainingTime': remaining,
+            'items': items_info
+        }
+    })
+
+@app.route('/api/auto-publish/list')
+def list_auto_publishes():
+    """List auto-publish batches"""
+    session_id = request.args.get('sessionId')
+    
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    if session_id:
+        c.execute("SELECT * FROM auto_publish WHERE session_id = ? ORDER BY created_at DESC LIMIT 20", (session_id,))
+    else:
+        c.execute("SELECT * FROM auto_publish ORDER BY created_at DESC LIMIT 20")
+    
+    rows = c.fetchall()
+    conn.close()
+    
+    batches = []
+    for row in rows:
+        b = dict(row)
+        batches.append({
+            'id': b['id'],
+            'status': b['status'],
+            'totalVideos': b['total_videos'],
+            'completedVideos': b['completed_videos'],
+            'failedVideos': b['failed_videos'],
+            'uploadedVideos': b['uploaded_videos'],
+            'createdAt': b['created_at'],
+            'completedAt': b.get('completed_at'),
+        })
+    
+    return jsonify({'ok': True, 'batches': batches})
+
+@app.route('/api/auto-publish/cancel', methods=['POST'])
+def cancel_auto_publish():
+    """Cancel an auto-publish batch"""
+    d = request.json
+    ap_id = d.get('autoPublishId')
+    
+    if not ap_id:
+        return jsonify({'ok': False, 'error': 'autoPublishId required'}), 400
+    
+    db_update_auto_publish(ap_id, status='cancelled')
+    
+    with AUTO_PUBLISH_LOCK:
+        if ap_id in AUTO_PUBLISH_QUEUE:
+            AUTO_PUBLISH_QUEUE.remove(ap_id)
+    
+    return jsonify({'ok': True, 'message': 'Auto-publish cancelled'})
+
+# ==========================================
 # 🚀 Application Startup (Correct Order!)
 # ==========================================
 
@@ -3105,6 +3850,20 @@ else:
     except Exception as e:
         print(f"⚠️ Failed to recover pending batches: {e}")
 
+    print("Auto-publish: Recovering pending auto-publishes...")
+    try:
+        pending_ap = db_get_pending_auto_publishes()
+        for ap in pending_ap:
+            if ap['status'] == 'running':
+                db_update_auto_publish(ap['id'], status='pending')
+            with AUTO_PUBLISH_LOCK:
+                if ap['id'] not in AUTO_PUBLISH_QUEUE:
+                    AUTO_PUBLISH_QUEUE.append(ap['id'])
+        if pending_ap:
+            print(f"  Recovered {len(pending_ap)} auto-publishes")
+    except Exception as e:
+        print(f"  Failed to recover auto-publishes: {e}")
+
 # 3. Start background threads AFTER database is ready
 print("🧵 Starting background threads...")
 
@@ -3117,6 +3876,11 @@ print("✅ Batch processor thread started")
 cleanup_thread = threading.Thread(target=background_cleanup, daemon=True, name="CleanupThread")
 cleanup_thread.start()
 print("✅ Cleanup thread started")
+
+# Start auto-publish queue thread
+auto_publish_thread = threading.Thread(target=process_auto_publish_queue, daemon=True, name="AutoPublishQueue")
+auto_publish_thread.start()
+print("Auto-publish queue thread started")
 
 print("🚀 Quran Reels Generator ready!")
 

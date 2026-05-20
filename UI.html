@@ -943,6 +943,10 @@
             <button class="tab-btn" data-tab="batch">📦 دفعة متعددة</button>
             <button class="tab-btn" data-tab="history">📜 السجل</button>
             <button class="tab-btn" data-tab="settings">⚙️ إعدادات</button>
+            <button class="tab-btn" data-tab="autopublish">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-left: 2px;"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                نشر تلقائي
+            </button>
         </nav>
 
         <!-- ═══════════════════════════════════
@@ -1433,6 +1437,196 @@
 
                 <button class="btn-primary" onclick="saveAllSettings()" style="margin-top: 10px;">💾 حفظ الإعدادات</button>
                 <button class="btn-secondary" onclick="resetAllSettings()" style="margin-top: 10px;">استعادة الافتراضي</button>
+            </div>
+
+            <!-- 🚀 Auto Publish Tab -->
+            <div class="tab-panel" id="autopublish-panel">
+
+                <!-- YouTube Connection Status -->
+                <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="font-size: 1.5rem;">📺</span>
+                        <div>
+                            <div style="font-weight: 600; font-size: 0.95rem;">YouTube</div>
+                            <div id="ap-yt-status" style="font-size: 0.8rem; color: var(--text-muted);">جاري التحقق...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Auto Publish Form -->
+                <div class="settings-section">
+                    <h4>📊 إعدادات النشر التلقائي</h4>
+
+                    <!-- عدد الفيديوهات -->
+                    <div class="form-group">
+                        <label class="form-label">🔢 عدد الفيديوهات (1-500)</label>
+                        <input type="number" class="form-input" id="ap-count" value="10" min="1" max="500" placeholder="عدد الفيديوهات">
+                    </div>
+
+                    <!-- القارئ -->
+                    <div class="form-group">
+                        <label class="form-label">🎤 القارئ</label>
+                        <select class="form-select" id="ap-reciter"></select>
+                    </div>
+
+                    <!-- الجودة -->
+                    <div class="form-group">
+                        <label class="form-label">🌟 الجودة</label>
+                        <select class="form-select" id="ap-quality">
+                            <option value="720">⚡ 720p HD - الأسرع</option>
+                            <option value="1080">🌟 1080p FHD</option>
+                        </select>
+                    </div>
+
+                    <!-- معدل الإطارات -->
+                    <div class="form-group">
+                        <label class="form-label">🎞️ معدل الإطارات (FPS)</label>
+                        <select class="form-select" id="ap-fps">
+                            <option value="15">🚀 15 FPS - سريع جداً</option>
+                            <option value="20" selected>⚖️ 20 FPS - متوازن</option>
+                            <option value="24">🎬 24 FPS - سينمائي</option>
+                            <option value="30">💎 30 FPS - الأكثر سلاسة</option>
+                        </select>
+                    </div>
+
+                    <!-- الخلفيات الديناميكية -->
+                    <div class="toggle-item" style="border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px 16px; margin-bottom: 18px;">
+                        <div class="toggle-info">
+                            <h4>الخلفيات الديناميكية</h4>
+                            <span>كل آية بخلفية مختلفة</span>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="ap-dynamic-bg" checked>
+                            <span class="switch-slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- YouTube Settings -->
+                <div class="settings-section">
+                    <h4>📺 إعدادات YouTube</h4>
+
+                    <!-- قالب العنوان -->
+                    <div class="form-group">
+                        <label class="form-label">📌 قالب العنوان</label>
+                        <input type="text" class="form-input" id="ap-title-template" value="Quran - {surah_name} ({ayah_range})" placeholder="مثال: Quran - {surah_name} ({ayah_range})">
+                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">
+                            المتاح: {surah_name}, {surah_number}, {ayah_range}, {reciter}
+                        </div>
+                    </div>
+
+                    <!-- وصف الفيديو -->
+                    <div class="form-group">
+                        <label class="form-label">📝 وصف الفيديو</label>
+                        <textarea class="form-input" id="ap-description" style="height: 80px; padding: 12px 16px; resize: vertical;" placeholder="وصف اختياري للفيديو..."></textarea>
+                    </div>
+
+                    <!-- التاغات -->
+                    <div class="form-group">
+                        <label class="form-label">🏷️ التاغات (مفصولة بفاصلة)</label>
+                        <input type="text" class="form-input" id="ap-tags" value="قرآن, تلاوة, إسلام, Quran" placeholder="قرآن, تلاوة, إسلام">
+                    </div>
+                </div>
+
+                <!-- Schedule Settings -->
+                <div class="settings-section">
+                    <h4>📅 إعدادات الجدولة</h4>
+
+                    <!-- توزيع على -->
+                    <div class="form-group">
+                        <label class="form-label">📆 توزيع على (أيام)</label>
+                        <input type="number" class="form-input" id="ap-spread-days" value="7" min="1" max="365" placeholder="عدد الأيام">
+                    </div>
+
+                    <!-- وقت النشر -->
+                    <div style="display: flex; gap: 12px;">
+                        <div class="form-group" style="flex: 1;">
+                            <label class="form-label">من الساعة</label>
+                            <select class="form-select" id="ap-time-start"></select>
+                        </div>
+                        <div class="form-group" style="flex: 1;">
+                            <label class="form-label">إلى الساعة</label>
+                            <select class="form-select" id="ap-time-end"></select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- زر بدء النشر التلقائي -->
+                <button type="button" class="btn-primary" onclick="startAutoPublish()" style="background: linear-gradient(135deg, #dc2626, #ef4444);">
+                    🚀 ابدأ النشر التلقائي
+                </button>
+
+                <!-- Active Auto Publish Progress (hidden by default) -->
+                <div id="ap-progress-section" style="display: none; margin-top: 24px;">
+                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 20px; text-align: center; margin-bottom: 16px;">
+                        <!-- Progress Ring -->
+                        <div class="progress-ring" style="margin-bottom: 12px;">
+                            <svg width="140" height="140">
+                                <circle class="bg" cx="70" cy="70" r="65"></circle>
+                                <circle class="fill" id="ap-progress-ring" cx="70" cy="70" r="65" style="stroke-dasharray: 408; stroke-dashoffset: 408; transition: stroke-dashoffset 0.5s ease;"></circle>
+                            </svg>
+                            <div class="progress-percent" id="ap-progress-text">0%</div>
+                        </div>
+
+                        <!-- Progress Bar -->
+                        <div style="background: var(--bg-input); border-radius: 8px; height: 6px; margin-bottom: 16px; overflow: hidden;">
+                            <div id="ap-progress-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-light)); border-radius: 8px; transition: width 0.5s ease;"></div>
+                        </div>
+
+                        <!-- Status -->
+                        <div id="ap-status-text" style="font-size: 0.95rem; color: var(--text-secondary); margin-bottom: 12px;">في الانتظار...</div>
+
+                        <!-- Stats Grid -->
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; margin-bottom: 12px;">
+                            <div style="background: var(--bg-input); border-radius: 8px; padding: 10px 6px;">
+                                <div style="font-size: 0.7rem; color: var(--text-muted);">الكل</div>
+                                <div id="ap-total" style="font-size: 1.1rem; font-weight: 700; color: var(--text-primary);">0</div>
+                            </div>
+                            <div style="background: var(--bg-input); border-radius: 8px; padding: 10px 6px;">
+                                <div style="font-size: 0.7rem; color: var(--text-muted);">مكتمل</div>
+                                <div id="ap-completed" style="font-size: 1.1rem; font-weight: 700; color: var(--success);">0</div>
+                            </div>
+                            <div style="background: var(--bg-input); border-radius: 8px; padding: 10px 6px;">
+                                <div style="font-size: 0.7rem; color: var(--text-muted);">مرفوع</div>
+                                <div id="ap-uploaded" style="font-size: 1.1rem; font-weight: 700; color: #60a5fa;">0</div>
+                            </div>
+                            <div style="background: var(--bg-input); border-radius: 8px; padding: 10px 6px;">
+                                <div style="font-size: 0.7rem; color: var(--text-muted);">فاشل</div>
+                                <div id="ap-failed" style="font-size: 1.1rem; font-weight: 700; color: var(--danger);">0</div>
+                            </div>
+                        </div>
+
+                        <!-- Estimated Time -->
+                        <div style="font-size: 0.85rem; color: var(--accent);">
+                            ⏱️ متبقي: <span id="ap-remaining">--:--</span>
+                        </div>
+
+                        <!-- Cancel Button -->
+                        <button type="button" class="btn-secondary btn-stop" style="margin-top: 16px;" onclick="cancelAutoPublish()">
+                            🛑 إلغاء النشر التلقائي
+                        </button>
+                    </div>
+
+                    <!-- Items List -->
+                    <div style="margin-bottom: 16px;">
+                        <div class="history-header">
+                            <h3 style="font-size: 0.95rem;">📋 تفاصيل الفيديوهات</h3>
+                        </div>
+                        <div id="ap-items-list" style="max-height: 400px; overflow-y: auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm);">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Previous Auto Publishes -->
+                <div style="margin-top: 24px;">
+                    <div class="history-header">
+                        <h3>📜 سجل النشر التلقائي</h3>
+                    </div>
+                    <div id="ap-history-list" style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden;">
+                        <p style="color: #666; text-align: center; padding: 20px;">لا يوجد سجل بعد</p>
+                    </div>
+                </div>
+
             </div>
         </main>
     </div>
@@ -3135,6 +3329,361 @@
         }
 
         setTimeout(checkActiveBatch, 1000);
+
+        // ═══════════════════════════════════════
+        // 🚀 Auto Publish System
+        // ═══════════════════════════════════════
+        let currentAutoPublishId = null;
+        let autoPublishPolling = null;
+        let SURAH_NAMES = [];
+
+        // Initialize auto-publish page when tab is clicked
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (btn.dataset.tab === 'autopublish') {
+                    initAutoPublishPage();
+                }
+            });
+        });
+
+        function initAutoPublishPage() {
+            // Populate reciter dropdown from main select
+            const apReciter = document.getElementById('ap-reciter');
+            const mainReciter = document.getElementById('reciterSelect');
+            if (apReciter && mainReciter && apReciter.options.length === 0) {
+                apReciter.innerHTML = mainReciter.innerHTML;
+            }
+
+            // Populate hour dropdowns
+            const timeStart = document.getElementById('ap-time-start');
+            const timeEnd = document.getElementById('ap-time-end');
+            if (timeStart && timeStart.options.length === 0) {
+                for (let h = 0; h < 24; h++) {
+                    const label = h.toString().padStart(2, '0') + ':00';
+                    timeStart.add(new Option(label, h));
+                    timeEnd.add(new Option(label, h));
+                }
+                timeStart.value = '14';
+                timeEnd.value = '22';
+            }
+
+            // Build SURAH_NAMES from main surahSelect
+            const mainSurah = document.getElementById('surahSelect');
+            if (mainSurah && mainSurah.options.length > 0 && SURAH_NAMES.length === 0) {
+                for (let i = 0; i < mainSurah.options.length; i++) {
+                    SURAH_NAMES.push(mainSurah.options[i].text.replace(/^\d+\.\s*/, ''));
+                }
+            }
+
+            // Check YouTube auth status
+            checkYouTubeAuth();
+
+            // Load auto-publish history
+            loadAutoPublishList();
+        }
+
+        async function startAutoPublish() {
+            const session = SESSION_ID;
+            if (!session) return showToast('يرجى تحديث الصفحة', 'error');
+
+            // Check YouTube auth first
+            const ytStatus = await checkYouTubeAuth();
+            if (!ytStatus.authorized) {
+                showToast('يرجى ربط حساب YouTube أولاً', 'error');
+                return;
+            }
+
+            const count = parseInt(document.getElementById('ap-count')?.value || 10);
+            const reciter = document.getElementById('ap-reciter')?.value || '';
+            const quality = document.getElementById('ap-quality')?.value || '720';
+            const fps = document.getElementById('ap-fps')?.value || '20';
+            const dynamicBg = document.getElementById('ap-dynamic-bg')?.checked ?? true;
+            const titleTemplate = document.getElementById('ap-title-template')?.value || 'Quran - {surah_name} ({ayah_range})';
+            const descriptionTemplate = document.getElementById('ap-description')?.value || '';
+            const tags = document.getElementById('ap-tags')?.value?.split(',').map(t => t.trim()).filter(Boolean) || ['quran', 'قرآن'];
+            const spreadDays = parseInt(document.getElementById('ap-spread-days')?.value || 7);
+            const timeStart = parseInt(document.getElementById('ap-time-start')?.value || 14);
+            const timeEnd = parseInt(document.getElementById('ap-time-end')?.value || 22);
+
+            try {
+                showToast('جاري إنشاء النشر التلقائي...', 'info');
+
+                const res = await fetch('/api/auto-publish/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sessionId: session,
+                        count, reciter, quality, fps, dynamicBg,
+                        titleTemplate, descriptionTemplate, tags,
+                        spreadDays, timeStartHour: timeStart, timeEndHour: timeEnd,
+                        aspectRatio: '9:16',
+                        useGlow: true, useVignette: true,
+                        font: 'Arabic', fontEn: 'English',
+                    })
+                });
+
+                const data = await res.json();
+
+                if (data.ok) {
+                    currentAutoPublishId = data.autoPublishId;
+                    showToast(`تم إنشاء ${data.totalVideos} فيديو - جاري المعالجة`, 'success');
+                    showAutoPublishProgress();
+                    startAutoPublishPolling();
+                    loadAutoPublishList();
+                } else {
+                    showToast(data.error || 'حدث خطأ', 'error');
+                }
+            } catch (e) {
+                showToast('خطأ في الاتصال', 'error');
+            }
+        }
+
+        async function pollAutoPublishStatus() {
+            if (!currentAutoPublishId) return;
+
+            try {
+                const res = await fetch(`/api/auto-publish/status?autoPublishId=${currentAutoPublishId}`);
+                const data = await res.json();
+
+                if (data.ok) {
+                    updateAutoPublishUI(data.autoPublish);
+
+                    if (data.autoPublish.status === 'complete' || data.autoPublish.status === 'cancelled' || data.autoPublish.status === 'error') {
+                        stopAutoPublishPolling();
+                        loadAutoPublishList();
+                    }
+                }
+            } catch (e) {
+                console.error('Poll error:', e);
+            }
+        }
+
+        function startAutoPublishPolling() {
+            stopAutoPublishPolling();
+            autoPublishPolling = setInterval(pollAutoPublishStatus, 3000);
+            pollAutoPublishStatus();
+        }
+
+        function stopAutoPublishPolling() {
+            if (autoPublishPolling) {
+                clearInterval(autoPublishPolling);
+                autoPublishPolling = null;
+            }
+        }
+
+        function updateAutoPublishUI(ap) {
+            const totalEl = document.getElementById('ap-total');
+            const completedEl = document.getElementById('ap-completed');
+            const uploadedEl = document.getElementById('ap-uploaded');
+            const failedEl = document.getElementById('ap-failed');
+            const remainingEl = document.getElementById('ap-remaining');
+            const statusEl = document.getElementById('ap-status-text');
+
+            if (totalEl) totalEl.textContent = ap.totalVideos;
+            if (completedEl) completedEl.textContent = ap.completedVideos || 0;
+            if (uploadedEl) uploadedEl.textContent = ap.uploadedVideos || 0;
+            if (failedEl) failedEl.textContent = ap.failedVideos || 0;
+            if (remainingEl) remainingEl.textContent = ap.remainingTime ? formatAPTime(ap.remainingTime) : '--';
+
+            const statusMap = {
+                'pending': '⏳ في الانتظار...',
+                'running': '🔄 جاري المعالجة...',
+                'complete': '✅ اكتمل!',
+                'cancelled': '⚠️ ملغي',
+                'error': '❌ حدث خطأ'
+            };
+            if (statusEl) statusEl.textContent = statusMap[ap.status] || ap.status;
+
+            showAutoPublishProgress();
+
+            // Update items list
+            const itemsList = document.getElementById('ap-items-list');
+            if (itemsList && ap.items) {
+                itemsList.innerHTML = ap.items.map(item => {
+                    const surahName = SURAH_NAMES?.[item.surah - 1] || `سورة ${item.surah}`;
+                    const statusBadge = getAPItemStatusBadge(item.status);
+                    const scheduleStr = item.scheduledTime ? formatAPScheduleTime(item.scheduledTime) : '';
+                    const ytLink = item.videoUrl ? `<a href="${item.videoUrl}" target="_blank" style="color: #22c55e; text-decoration: none; font-size: 12px;">YouTube ↗</a>` : '';
+
+                    return `
+                        <div class="ap-item" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.05);">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span style="color: #888; font-size: 12px; min-width: 24px;">#${item.position + 1}</span>
+                                <div>
+                                    <span style="font-size: 14px;">${surahName} (${item.startAyah}-${item.endAyah})</span>
+                                    ${statusBadge}
+                                </div>
+                            </div>
+                            <div style="text-align: left; display: flex; align-items: center; gap: 10px;">
+                                <span style="color: #888; font-size: 11px;">${scheduleStr}</span>
+                                ${ytLink}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            // Update progress ring and bar
+            const percent = ap.totalVideos > 0 ? Math.round(((ap.completedVideos || 0) / ap.totalVideos) * 100) : 0;
+
+            const progressRing = document.getElementById('ap-progress-ring');
+            if (progressRing) {
+                const circumference = 2 * Math.PI * 65;
+                progressRing.style.strokeDashoffset = circumference - (percent / 100) * circumference;
+            }
+
+            const progressBar = document.getElementById('ap-progress-bar');
+            if (progressBar) progressBar.style.width = percent + '%';
+            const progressText = document.getElementById('ap-progress-text');
+            if (progressText) progressText.textContent = percent + '%';
+        }
+
+        function getAPItemStatusBadge(status) {
+            const styles = {
+                'pending': 'background: #374151; color: #9ca3af;',
+                'generating': 'background: #1e3a5f; color: #60a5fa;',
+                'generated': 'background: #1a3a2a; color: #4ade80;',
+                'uploading': 'background: #3b2f1a; color: #fbbf24;',
+                'published': 'background: #14532d; color: #22c55e;',
+                'upload_failed': 'background: #3b1a1a; color: #f87171;',
+                'error': 'background: #3b1a1a; color: #f87171;',
+            };
+            const labels = {
+                'pending': 'انتظار',
+                'generating': 'تصميم',
+                'generated': 'جاهز',
+                'uploading': 'رفع',
+                'published': 'منشور',
+                'upload_failed': 'فشل الرفع',
+                'error': 'خطأ',
+            };
+            const style = styles[status] || styles.pending;
+            const label = labels[status] || status;
+            return ` <span style="${style} padding: 2px 8px; border-radius: 12px; font-size: 11px;">${label}</span>`;
+        }
+
+        function formatAPScheduleTime(isoStr) {
+            try {
+                const d = new Date(isoStr);
+                return d.toLocaleDateString('ar-EG', { month: 'short', day: 'numeric' }) + ' ' +
+                       d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+            } catch {
+                return isoStr;
+            }
+        }
+
+        function formatAPTime(seconds) {
+            if (!seconds) return '--:--';
+            const m = Math.floor(seconds / 60);
+            const s = seconds % 60;
+            if (m >= 60) {
+                const h = Math.floor(m / 60);
+                const rm = m % 60;
+                return `${h}:${rm.toString().padStart(2, '0')}`;
+            }
+            return `${m}:${s.toString().padStart(2, '0')}`;
+        }
+
+        function showAutoPublishProgress() {
+            const progressSection = document.getElementById('ap-progress-section');
+            if (progressSection) progressSection.style.display = 'block';
+        }
+
+        async function cancelAutoPublish() {
+            if (!currentAutoPublishId) return;
+            if (!confirm('هل أنت متأكد من إلغاء النشر التلقائي؟')) return;
+
+            try {
+                await fetch('/api/auto-publish/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ autoPublishId: currentAutoPublishId })
+                });
+                stopAutoPublishPolling();
+                showToast('تم الإلغاء', 'info');
+                loadAutoPublishList();
+            } catch (e) {
+                showToast('خطأ', 'error');
+            }
+        }
+
+        async function loadAutoPublishList() {
+            const session = SESSION_ID;
+            if (!session) return;
+
+            try {
+                const res = await fetch(`/api/auto-publish/list?sessionId=${session}`);
+                const data = await res.json();
+
+                const listEl = document.getElementById('ap-history-list');
+                if (!listEl) return;
+
+                if (!data.ok || !data.batches || data.batches.length === 0) {
+                    listEl.innerHTML = '<p style="color: #666; text-align: center; padding: 20px;">لا يوجد سجل بعد</p>';
+                    return;
+                }
+
+                listEl.innerHTML = data.batches.map(b => {
+                    const statusColor = b.status === 'complete' ? '#22c55e' : b.status === 'running' ? '#60a5fa' : b.status === 'cancelled' ? '#f59e0b' : '#f87171';
+                    const date = new Date(b.createdAt * 1000).toLocaleDateString('ar-EG');
+                    return `
+                        <div class="ap-history-item" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.05); cursor: pointer;" onclick="viewAutoPublish('${b.id}')">
+                            <div>
+                                <span style="color: ${statusColor}; font-size: 12px;">●</span>
+                                <span style="margin-right: 8px; font-size: 14px;">${b.totalVideos} فيديو</span>
+                                <span style="color: #888; font-size: 12px;">${date}</span>
+                            </div>
+                            <div style="font-size: 12px; color: #888;">
+                                ✅ ${b.completedVideos || 0} | 📤 ${b.uploadedVideos || 0} | ❌ ${b.failedVideos || 0}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } catch (e) {
+                console.error('Load AP list error:', e);
+            }
+        }
+
+        function viewAutoPublish(apId) {
+            currentAutoPublishId = apId;
+            startAutoPublishPolling();
+        }
+
+        async function checkYouTubeAuth() {
+            const session = SESSION_ID;
+            try {
+                const res = await fetch(`/api/youtube/status?sessionId=${encodeURIComponent(session)}`);
+                const data = await res.json();
+                updateYouTubeConnectionStatus(data);
+                return data;
+            } catch {
+                return { authorized: false, configured: false };
+            }
+        }
+
+        function updateYouTubeConnectionStatus(data) {
+            const statusEl = document.getElementById('ap-yt-status');
+            if (!statusEl) return;
+
+            if (data.authorized) {
+                statusEl.innerHTML = '<span style="color: #22c55e;">✅ متصل بـ YouTube</span>';
+            } else if (data.configured) {
+                statusEl.innerHTML = '<button onclick="connectYouTube()" style="background: #dc2626; color: white; border: none; padding: 6px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; font-family: inherit;">ربط حساب YouTube</button>';
+            } else {
+                statusEl.innerHTML = '<span style="color: #888;">YouTube غير متوفر (تحتاج إعدادات السيرفر)</span>';
+            }
+        }
+
+        function connectYouTube() {
+            const session = SESSION_ID;
+            window.open(`/api/youtube/auth-url?sessionId=${encodeURIComponent(session)}`, '_blank', 'width=600,height=700');
+            window.addEventListener('message', (e) => {
+                if (e.data?.type === 'youtube_auth_success') {
+                    checkYouTubeAuth();
+                    showToast('تم ربط YouTube بنجاح!', 'success');
+                }
+            });
+        }
     </script>
 </body>
 </html>
