@@ -946,7 +946,7 @@ def process_auto_publish(ap_id):
         
         # Get reciter name
         reciter_id = video_config.get('reciter', '')
-        reciter_name = RECITERS_MAP.get(reciter_id, reciter_id)
+        reciter_name = RECITER_DISPLAY_NAME.get(reciter_id, reciter_id)
         
         title_template = youtube_config.get('titleTemplate', 'Quran - {surah_name} ({ayah_range})')
         desc_template = youtube_config.get('descriptionTemplate', '')
@@ -1021,7 +1021,7 @@ def process_auto_publish(ap_id):
                     
                     # Use per-item reciter name
                     item_reciter = item.get('reciter', '') or reciter_id
-                    item_reciter_name = RECITERS_MAP.get(item_reciter, item_reciter)
+                    item_reciter_name = RECITER_DISPLAY_NAME.get(item_reciter, item_reciter)
                     
                     title = generate_youtube_title(surah, start_ayah, end_ayah, title_template, item_reciter_name)
                     description = generate_youtube_description(surah, start_ayah, end_ayah, desc_template, item_reciter_name)
@@ -1218,6 +1218,9 @@ RECITER_ID_TO_NAME = {v: k for k, v in OLD_RECITERS_MAP.items()}
 # إضافة أسماء القراء الجدد (الاسم العربي = الاسم العربي)
 for name in NEW_RECITERS_CONFIG.keys():
     RECITER_ID_TO_NAME[name] = name
+
+# خريطة موحدة لتحويل أي ID لاسم عربي (NEW و OLD)
+RECITER_DISPLAY_NAME = {**{k: k for k in NEW_RECITERS_CONFIG.keys()}, **RECITER_ID_TO_NAME}
 
 RECITERS_MAP = {**{k: k for k in NEW_RECITERS_CONFIG.keys()}, **OLD_RECITERS_MAP}
 
@@ -3829,7 +3832,7 @@ def get_auto_publish_status():
             'startAyah': item['start_ayah'],
             'endAyah': item['end_ayah'],
             'reciter': reciter_id,
-            'reciterName': RECITERS_MAP.get(reciter_id, reciter_id) if reciter_id else '',
+            'reciterName': RECITER_DISPLAY_NAME.get(reciter_id, reciter_id) if reciter_id else '',
             'status': item['status'],
             'videoId': item.get('video_id'),
             'videoUrl': item.get('video_url'),
