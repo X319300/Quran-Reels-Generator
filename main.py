@@ -277,6 +277,7 @@ def init_db():
         surah INTEGER,
         start_ayah INTEGER,
         end_ayah INTEGER,
+        reciter TEXT,
         status TEXT DEFAULT 'pending',
         video_id TEXT,
         video_url TEXT,
@@ -533,12 +534,12 @@ def db_get_auto_publish(ap_id):
     conn.close()
     return dict(row) if row else None
 
-def db_add_auto_publish_item(ap_id, job_id, position, surah, start_ayah, end_ayah):
+def db_add_auto_publish_item(ap_id, job_id, position, surah, start_ayah, end_ayah, reciter=''):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''INSERT INTO auto_publish_items (auto_publish_id, job_id, position, surah, start_ayah, end_ayah, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-              (ap_id, job_id, position, surah, start_ayah, end_ayah, 'pending', time.time()))
+    c.execute('''INSERT INTO auto_publish_items (auto_publish_id, job_id, position, surah, start_ayah, end_ayah, reciter, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+              (ap_id, job_id, position, surah, start_ayah, end_ayah, reciter, 'pending', time.time()))
     conn.commit()
     conn.close()
 
@@ -643,26 +644,89 @@ def generate_random_schedule(total_videos, schedule_config):
     schedule_times.sort()
     return schedule_times
 
-def generate_random_video_items(count, reciter_id):
+def estimate_ayah_duration_ms(surah, start_ayah, end_ayah, reciter_name=None):
     """
-    Generate random surah/ayah combinations targeting ~60 second videos.
+    Estimate video duration in milliseconds for given surah/ayah range using cached timing data.
+    Falls back to statistical estimation if timing data is unavailable.
+    """
+    total_ms = 0
+    reciter_id = None
+
+    # Try to get mp3quran reciter ID for precise timing
+    if reciter_name:
+        if reciter_name in NEW_RECITERS_CONFIG:
+            reciter_id = NEW_RECITERS_CONFIG[reciter_name][0]
+        elif reciter_name in MP3QURAN_IDS:
+            reciter_id = MP3QURAN_IDS[reciter_name]
+        elif reciter_name in OLD_RECITERS_MAP:
+            old_id = OLD_RECITERS_MAP[reciter_name]
+            if old_id in OLD_RECITER_TO_MP3QURAN_ID:
+                reciter_id = OLD_RECITER_TO_MP3QURAN_ID[old_id]
+    
+    # If we have a reciter_id, try to get precise timings
+    if reciter_id:
+        cache_dir = os.path.join(EXEC_DIR, "cache_mp3quran", str(reciter_id))
+        timings_path = os.path.join(cache_dir, f"{surah:03d}.json")
+        
+        try:
+            if not os.path.exists(timings_path):
+                os.makedirs(cache_dir, exist_ok=True)
+                t_data = requests.get(
+                    f"https://mp3quran.net/api/v3/ayat_timing?surah={surah}&read={reciter_id}",
+                    timeout=10
+                ).json()
+                timings = {item['ayah']: {'start': item['start_time'], 'end': item['end_time']} for item in t_data}
+                with open(timings_path, 'w') as f:
+                    json.dump(timings, f)
+            else:
+                with open(timings_path, 'r') as f:
+                    timings = json.load(f)
+            
+            if timings:
+                for ayah in range(start_ayah, end_ayah + 1):
+                    ayah_str = str(ayah)
+                    if ayah_str in timings:
+                        total_ms += timings[ayah_str]['end'] - timings[ayah_str]['start']
+                
+                if total_ms > 0:
+                    return total_ms
+        except:
+            pass
+    
+    # Fallback: statistical estimation using estimate_ayah_length
+    for ayah in range(start_ayah, end_ayah + 1):
+        total_ms += estimate_ayah_length(surah, ayah) * 1000
+    
+    return total_ms
+
+
+def generate_random_video_items(count, reciter_ids=None):
+    """
+    Generate random surah/ayah combinations targeting videos UNDER 60 seconds.
+    Each item gets a random reciter from reciter_ids list.
     Avoids duplicates and tries to pick diverse surahs.
-    Returns: list of {surah, startAyah, endAyah}
+    Returns: list of {surah, startAyah, endAyah, reciter}
     """
     items = []
     used_ranges = set()
     
+    # Use provided reciters or fallback to empty (will be set later)
+    reciter_list = reciter_ids if reciter_ids else []
+    
     # Prefer shorter surahs for reels (surah 78-114 are good candidates)
-    # Also include some medium surahs (36, 55, 56, 67)
-    preferred_surahs = list(range(78, 115)) + [36, 55, 56, 67, 50, 73, 74, 75, 76, 77, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114]
+    preferred_surahs = list(range(78, 115)) + [36, 55, 56, 67, 50, 73, 74, 75, 76, 77]
+    
+    MAX_DURATION_MS = 58000  # 58 seconds (leaving 2s margin)
+    MIN_DURATION_MS = 10000  # 10 seconds minimum
     
     for _ in range(count):
         attempts = 0
-        while attempts < 50:
+        found = False
+        while attempts < 80:
             attempts += 1
             
-            # Pick a surah (70% chance from preferred, 30% from all)
-            if random.random() < 0.7 and preferred_surahs:
+            # Pick a surah (80% chance from preferred short surahs)
+            if random.random() < 0.8 and preferred_surahs:
                 surah = random.choice(preferred_surahs)
             else:
                 surah = random.randint(1, 114)
@@ -672,30 +736,68 @@ def generate_random_video_items(count, reciter_id):
             # Pick start ayah
             start = random.randint(1, max(1, verse_count))
             
-            # Determine how many ayahs (target ~3-8 ayahs for ~60 seconds)
-            max_ayahs = min(10, verse_count - start + 1)
-            num_ayahs = random.randint(max(1, min(3, max_ayahs)), max(1, min(8, max_ayahs)))
-            end = min(start + num_ayahs - 1, verse_count)
+            # Try adding ayahs one by one until we approach MAX_DURATION
+            end = start
+            # Pick a random reciter for estimation
+            est_reciter = random.choice(reciter_list) if reciter_list else None
+            
+            for _ in range(min(20, verse_count - start + 1)):
+                est_ms = estimate_ayah_duration_ms(surah, start, end, est_reciter)
+                if est_ms > MAX_DURATION_MS:
+                    # Too long, remove last ayah
+                    if end > start:
+                        end -= 1
+                    break
+                end += 1
+                if end > verse_count:
+                    end = verse_count
+                    break
+            
+            # Ensure at least 1 ayah
+            end = max(start, end)
+            
+            # Check minimum duration
+            est_ms = estimate_ayah_duration_ms(surah, start, end, est_reciter)
+            if est_ms < MIN_DURATION_MS:
+                continue  # Too short, try again
             
             # Check for duplicates
             range_key = f"{surah}:{start}-{end}"
             if range_key not in used_ranges:
                 used_ranges.add(range_key)
+                # Assign a random reciter from the selected list
+                reciter = random.choice(reciter_list) if reciter_list else ''
                 items.append({
                     'surah': surah,
                     'startAyah': start,
-                    'endAyah': end
+                    'endAyah': end,
+                    'reciter': reciter
                 })
+                found = True
                 break
-        else:
-            # Fallback: just pick a short surah fully
-            surah = random.choice([112, 113, 114, 108, 109, 110, 111])
+        
+        if not found:
+            # Fallback: pick a very short surah fully
+            surah = random.choice([112, 113, 114, 108, 109, 110, 111, 103, 105, 106, 107])
             verse_count = VERSE_COUNTS.get(surah, 6)
-            items.append({
-                'surah': surah,
-                'startAyah': 1,
-                'endAyah': verse_count
-            })
+            reciter = random.choice(reciter_list) if reciter_list else ''
+            range_key = f"{surah}:1-{verse_count}"
+            if range_key not in used_ranges:
+                used_ranges.add(range_key)
+                items.append({
+                    'surah': surah,
+                    'startAyah': 1,
+                    'endAyah': verse_count,
+                    'reciter': reciter
+                })
+            else:
+                # Last resort: any short surah with 1 ayah
+                for s in [112, 113, 114, 108]:
+                    rk = f"{s}:1-1"
+                    if rk not in used_ranges:
+                        used_ranges.add(rk)
+                        items.append({'surah': s, 'startAyah': 1, 'endAyah': 1, 'reciter': reciter})
+                        break
     
     return items
 
@@ -3623,9 +3725,20 @@ def create_auto_publish():
     if count < 1 or count > 500:
         return jsonify({'ok': False, 'error': 'Count must be between 1 and 500'}), 400
     
+    # Handle reciters (array) or reciter (single) for backward compatibility
+    reciters = d.get('reciters', [])
+    if not reciters:
+        single_reciter = d.get('reciter', '')
+        if single_reciter:
+            reciters = [single_reciter]
+    
+    if not reciters:
+        return jsonify({'ok': False, 'error': 'No reciters selected'}), 400
+    
     # Video generation config
     video_config = {
-        'reciter': d.get('reciter', ''),
+        'reciter': reciters[0],  # default reciter (overridden per-item)
+        'reciters': reciters,
         'quality': d.get('quality', '720'),
         'fps': d.get('fps', '20'),
         'dynamicBg': d.get('dynamicBg', True),
@@ -3654,9 +3767,8 @@ def create_auto_publish():
         'timezone': d.get('timezone', 'Africa/Cairo'),
     }
     
-    # Generate random video items
-    reciter_id = d.get('reciter', '')
-    video_items = generate_random_video_items(count, reciter_id)
+    # Generate random video items (with duration < 60s guarantee)
+    video_items = generate_random_video_items(count, reciters)
     
     # Create auto-publish record
     ap_id = str(uuid.uuid4())
@@ -3668,10 +3780,11 @@ def create_auto_publish():
         job_config['surah'] = item['surah']
         job_config['startAyah'] = item['startAyah']
         job_config['endAyah'] = item['endAyah']
+        job_config['reciter'] = item.get('reciter', reciters[0])  # Per-item reciter
         job_config['session_id'] = session_id
         
         job_id = create_job(job_config, session_id)
-        db_add_auto_publish_item(ap_id, job_id, i, item['surah'], item['startAyah'], item['endAyah'])
+        db_add_auto_publish_item(ap_id, job_id, i, item['surah'], item['startAyah'], item['endAyah'], item.get('reciter', ''))
     
     # Add to queue
     with AUTO_PUBLISH_LOCK:
@@ -3710,6 +3823,7 @@ def get_auto_publish_status():
             'surah': item['surah'],
             'startAyah': item['start_ayah'],
             'endAyah': item['end_ayah'],
+            'reciter': item.get('reciter', ''),
             'status': item['status'],
             'videoId': item.get('video_id'),
             'videoUrl': item.get('video_url'),

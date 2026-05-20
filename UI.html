@@ -1463,10 +1463,15 @@
                         <input type="number" class="form-input" id="ap-count" value="10" min="1" max="500" placeholder="عدد الفيديوهات">
                     </div>
 
-                    <!-- القارئ -->
+                    <!-- القراء -->
                     <div class="form-group">
-                        <label class="form-label">🎤 القارئ</label>
-                        <select class="form-select" id="ap-reciter"></select>
+                        <label class="form-label">🎤 القراء <span style="font-size: 0.75rem; color: var(--text-muted);">(اختار قراء وسيتم الاختيار منهم عشوائياً)</span></label>
+                        <div id="ap-reciters-list" style="max-height: 180px; overflow-y: auto; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px;">
+                        </div>
+                        <div style="display: flex; gap: 8px; margin-top: 6px;">
+                            <button type="button" onclick="apSelectAllReciters()" style="font-size: 0.75rem; color: var(--accent); background: none; border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; cursor: pointer; font-family: inherit;">تحديد الكل</button>
+                            <button type="button" onclick="apDeselectAllReciters()" style="font-size: 0.75rem; color: var(--text-muted); background: none; border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; cursor: pointer; font-family: inherit;">إلغاء الكل</button>
+                        </div>
                     </div>
 
                     <!-- الجودة -->
@@ -3346,12 +3351,35 @@
             });
         });
 
+        let apRecitersReady = false;
+
+        function apSelectAllReciters() {
+            document.querySelectorAll('#ap-reciters-list input[type=checkbox]').forEach(cb => cb.checked = true);
+        }
+        function apDeselectAllReciters() {
+            document.querySelectorAll('#ap-reciters-list input[type=checkbox]').forEach(cb => cb.checked = false);
+        }
+        function getSelectedReciters() {
+            const checked = document.querySelectorAll('#ap-reciters-list input[type=checkbox]:checked');
+            return Array.from(checked).map(cb => cb.value);
+        }
+
         function initAutoPublishPage() {
-            // Populate reciter dropdown from main select
-            const apReciter = document.getElementById('ap-reciter');
+            // Populate reciters checkbox list from main select
+            const recitersList = document.getElementById('ap-reciters-list');
             const mainReciter = document.getElementById('reciterSelect');
-            if (apReciter && mainReciter && apReciter.options.length === 0) {
-                apReciter.innerHTML = mainReciter.innerHTML;
+            if (recitersList && mainReciter && !apRecitersReady) {
+                recitersList.innerHTML = '';
+                for (let i = 0; i < mainReciter.options.length; i++) {
+                    const opt = mainReciter.options[i];
+                    const label = document.createElement('label');
+                    label.style.cssText = 'display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: background 0.2s;';
+                    label.onmouseover = () => label.style.background = 'rgba(255,255,255,0.05)';
+                    label.onmouseout = () => label.style.background = 'transparent';
+                    label.innerHTML = `<input type="checkbox" value="${opt.value}" style="accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer;"> <span>${opt.text}</span>`;
+                    recitersList.appendChild(label);
+                }
+                apRecitersReady = true;
             }
 
             // Populate hour dropdowns
@@ -3394,7 +3422,11 @@
             }
 
             const count = parseInt(document.getElementById('ap-count')?.value || 10);
-            const reciter = document.getElementById('ap-reciter')?.value || '';
+            const selectedReciters = getSelectedReciters();
+            if (selectedReciters.length === 0) {
+                showToast('يرجى اختيار قارئ واحد على الأقل', 'error');
+                return;
+            }
             const quality = document.getElementById('ap-quality')?.value || '720';
             const fps = document.getElementById('ap-fps')?.value || '20';
             const dynamicBg = document.getElementById('ap-dynamic-bg')?.checked ?? true;
@@ -3413,7 +3445,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         sessionId: session,
-                        count, reciter, quality, fps, dynamicBg,
+                        count, reciters: selectedReciters, quality, fps, dynamicBg,
                         titleTemplate, descriptionTemplate, tags,
                         spreadDays, timeStartHour: timeStart, timeEndHour: timeEnd,
                         aspectRatio: '9:16',
@@ -3504,6 +3536,7 @@
                     const statusBadge = getAPItemStatusBadge(item.status);
                     const scheduleStr = item.scheduledTime ? formatAPScheduleTime(item.scheduledTime) : '';
                     const ytLink = item.videoUrl ? `<a href="${item.videoUrl}" target="_blank" style="color: #22c55e; text-decoration: none; font-size: 12px;">YouTube ↗</a>` : '';
+                    const reciterName = item.reciter || '';
 
                     return `
                         <div class="ap-item" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.05);">
@@ -3511,6 +3544,7 @@
                                 <span style="color: #888; font-size: 12px; min-width: 24px;">#${item.position + 1}</span>
                                 <div>
                                     <span style="font-size: 14px;">${surahName} (${item.startAyah}-${item.endAyah})</span>
+                                    ${reciterName ? `<span style="color: var(--text-muted); font-size: 11px; margin-right: 6px;">🎤${reciterName}</span>` : ''}
                                     ${statusBadge}
                                 </div>
                             </div>
@@ -3674,15 +3708,49 @@
             }
         }
 
-        function connectYouTube() {
+        let apAuthWindow = null;
+        async function connectYouTube() {
             const session = SESSION_ID;
-            window.open(`/api/youtube/auth-url?sessionId=${encodeURIComponent(session)}`, '_blank', 'width=600,height=700');
-            window.addEventListener('message', (e) => {
-                if (e.data?.type === 'youtube_auth_success') {
+            try {
+                showToast('جاري فتح نافذة المصادقة...', 'info');
+                const authRes = await fetch(`/api/youtube/auth-url?sessionId=${encodeURIComponent(session)}`);
+                const authData = await authRes.json();
+
+                if (authData.authUrl) {
+                    apAuthWindow = window.open(authData.authUrl, 'ap-yt-auth', 'width=500,height=600');
+                } else if (authData.ok && authData.alreadyAuthorized) {
+                    showToast('الحساب متصل بالفعل', 'info');
                     checkYouTubeAuth();
-                    showToast('تم ربط YouTube بنجاح!', 'success');
+                    return;
+                } else {
+                    showToast(authData.error || 'فشل في الحصول على رابط المصادقة', 'error');
+                    return;
                 }
-            });
+
+                // الاستماع لرسالة النجاح من نافذة المصادقة
+                function apAuthHandler(e) {
+                    if (e.data?.type === 'youtube_auth_success') {
+                        window.removeEventListener('message', apAuthHandler);
+                        checkYouTubeAuth();
+                        showToast('تم ربط YouTube بنجاح!', 'success');
+                    }
+                }
+                window.addEventListener('message', apAuthHandler);
+
+                // مراقبة إغلاق النافذة يدوياً
+                if (apAuthWindow) {
+                    const checkClosed = setInterval(() => {
+                        if (apAuthWindow.closed) {
+                            clearInterval(checkClosed);
+                            window.removeEventListener('message', apAuthHandler);
+                            // نتحقق مرة تانية عشان لو كان نجح قبل الإغلاق
+                            checkYouTubeAuth();
+                        }
+                    }, 1000);
+                }
+            } catch (err) {
+                showToast('خطأ في الاتصال', 'error');
+            }
         }
     </script>
 </body>
