@@ -4,6 +4,7 @@ import io
 import os
 import uuid
 import shutil
+import textwrap
 import threading
 import time
 import datetime
@@ -1877,22 +1878,39 @@ def create_english_clip(text, duration, target_w, scale_factor=1.0, glow=False, 
     final_fs = int(32 * scale_factor * size_mult)
     font = get_cached_font(font_path, final_fs)
     
-    h = int(150 * size_mult)
+    # ✅ التفاف النص الإنجليزي عشان ميتعدش الشاشة
+    max_chars_per_line = max(15, int(target_w / (final_fs * 0.55)))  # تقدير عرض الحرف
+    wrapped_lines = textwrap.wrap(text, width=max_chars_per_line)
+    
+    # لو النص فاضي أو مفيش سطور
+    if not wrapped_lines:
+        wrapped_lines = [text]
+    
+    num_lines = len(wrapped_lines)
+    line_height = int(final_fs * 1.4)  # مسافة بين السطور
+    total_text_height = num_lines * line_height
+    
+    h = max(int(150 * size_mult), total_text_height + 40)
     img = Image.new('RGBA', (target_w, h), (0,0,0,0))
     draw = ImageDraw.Draw(img)
     
-    y_pos = 20
-    # ✅ ظل متعدد الطبقات للنص الإنجليزي
-    if has_shadow:
-        # طبقة ظل خارجية ناعمة
-        for offset in range(4, 0, -1):
-            opacity = int(70 - offset * 12)
-            shadow_color = (*[int(shadow_c.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)], opacity)
-            draw.text((target_w/2 + offset, y_pos + offset), text, font=font, fill=shadow_color, align='center', anchor="ma")
-        # طبقة ظل داخلية حادة
-        draw.text((target_w/2 + 2, y_pos + 2), text, font=font, fill=(0, 0, 0, 160), align='center', anchor="ma")
+    # ✅ رسم كل سطر في مكانه
+    start_y = (h - total_text_height) / 2  # توسيط عمودي للنص المتعدد الأسطر
+    
+    for line_idx, line_text in enumerate(wrapped_lines):
+        y_pos = start_y + line_idx * line_height
+        
+        # ظل متعدد الطبقات للنص الإنجليزي
+        if has_shadow:
+            # طبقة ظل خارجية ناعمة
+            for offset in range(4, 0, -1):
+                opacity = int(70 - offset * 12)
+                shadow_color = (*[int(shadow_c.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)], opacity)
+                draw.text((target_w/2 + offset, y_pos + offset), line_text, font=font, fill=shadow_color, align='center', anchor="ma")
+            # طبقة ظل داخلية حادة
+            draw.text((target_w/2 + 2, y_pos + 2), line_text, font=font, fill=(0, 0, 0, 160), align='center', anchor="ma")
 
-    draw.text((target_w/2, y_pos), text, font=font, fill=color, align='center', anchor="ma", stroke_width=stroke_w, stroke_fill=stroke_c)
+        draw.text((target_w/2, y_pos), line_text, font=font, fill=color, align='center', anchor="ma", stroke_width=stroke_w, stroke_fill=stroke_c)
     
     # ✅ Fade يتم التحكم فيه من خارج الدالة
     clip = ImageClip(np.array(img)).set_duration(duration)
