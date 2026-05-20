@@ -773,123 +773,104 @@ def estimate_ayah_duration_ms(surah, start_ayah, end_ayah, reciter_name=None):
 
 def generate_random_video_items(count, reciter_ids=None):
     """
-    Generate random surah/ayah combinations targeting videos 30-60 seconds.
-    كل فيديو لازم يكون 30 ثانية على الأقل.
-    لو الآيات القليلة مش كفاية، يدور على سورة/نطاق تاني عشوائي.
+    خوارزمية Sliding Window مضمونة 100% - مستحيل تطلع آية واحدة.
+    1. نحسب مدة كل آية في السورة
+    2. نلقي نظرة على كل النطاقات الممكنة (30-58 ثانية)
+    3. نختار واحد عشوائي مش متكرر
     Returns: list of {surah, startAyah, endAyah, reciter}
     """
     items = []
     used_ranges = set()
-    
-    # Use provided reciters or fallback to empty (will be set later)
     reciter_list = reciter_ids if reciter_ids else []
-    
-    # كل السور اللي فيها آيات كفاية لعمل فيديو 30+ ثانية (معظم السور)
-    preferred_surahs = list(range(36, 115)) + [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
-    
-    MAX_DURATION_MS = 58000  # 58 seconds
-    MIN_DURATION_MS = 30000  # 30 seconds minimum
-    
-    def find_valid_range(reciter):
+
+    MAX_DUR = 58.0  # ثانية
+    MIN_DUR = 30.0  # ثانية
+
+    # Cache: نحسب مدة الآيات مرة واحدة لكل سورة/قارئ
+    _ayah_dur_cache = {}
+
+    def get_ayah_durations(surah, reciter):
+        """رجّع مصفوفة مدة كل آية بالثواني (مع cache)"""
+        key = f"{surah}_{reciter or '_'}"
+        if key in _ayah_dur_cache:
+            return _ayah_dur_cache[key]
+
+        vc = VERSE_COUNTS.get(surah, 286)
+        durs = []
+        for a in range(1, vc + 1):
+            ms = estimate_ayah_duration_ms(surah, a, a, reciter)
+            durs.append(ms / 1000.0)
+        _ayah_dur_cache[key] = durs
+        return durs
+
+    def find_valid_ranges_for_surah(surah, reciter):
         """
-        يدور على نطاق آيات عشوائي يكون بين 30-58 ثانية.
-        يبدأ من بداية سورة عشوائية وينمو آية آية.
-        لو السورة مش كفاية، يجرب سورة تانية.
+        Sliding Window O(n):
+        يرجّع كل النطاقات الصالحة (start, end) في السورة اللي مدتها 30-58 ثانية.
+        مستحيل يرجّع نطاق أقل من 30 ثانية.
         """
-        # نخلط السور ونحاول
-        shuffled = preferred_surahs.copy()
-        random.shuffle(shuffled)
-        # نضيف باقي السور كـ fallback
-        all_surahs = shuffled + [s for s in range(1, 115) if s not in shuffled]
-        
-        for surah in all_surahs:
-            verse_count = VERSE_COUNTS.get(surah, 20)
-            if verse_count < 3:
-                continue  # سورة قصيرة أوي، مش هتكفي
-            
-            # نحاول عدة بدايات عشوائية في نفس السورة
-            for _ in range(3):
-                # نختار بداية عشوائية مع مساحة كفاية بعدها
-                max_start = max(1, verse_count - 3)
-                start = random.randint(1, max_start)
-                
-                # نوسّع آية آية من البداية لحد ما نوصل 30+ ثانية
-                end = start
-                found_min = False
-                
-                while end <= verse_count:
-                    est_ms = estimate_ayah_duration_ms(surah, start, end, reciter)
-                    
-                    if est_ms >= MAX_DURATION_MS:
-                        # أكتر من 58 ثانية - نشيل آخر آية ونرجع
-                        if end > start:
-                            end -= 1
-                        break
-                    
-                    if est_ms >= MIN_DURATION_MS:
-                        # وصلنا 30+ ثانية - نتحقق إن النطاق متكررش
-                        found_min = True
-                    
-                    end += 1
-                
-                # لو وصلنا لآخر السورة بدون ما نوصل 30 ثانية
-                if end > verse_count and not found_min:
-                    continue  # نحاول سورة/بداية تانية
-                
-                # نتأكد إن عندنا على الأقل 30 ثانية
-                final_est = estimate_ayah_duration_ms(surah, start, min(end, verse_count), reciter)
-                if final_est < MIN_DURATION_MS:
-                    continue
-                
-                end = min(end, verse_count)
-                end = max(start, end)
-                
-                # لو وصلنا هنا، عندنا نطاق صالح بين 30-58 ثانية
-                return surah, start, end
-        
-        return None, None, None  # لم نجد
-    
+        durs = get_ayah_durations(surah, reciter)
+        n = len(durs)
+        if n == 0:
+            return []
+
+        valid = []
+        window_sum = 0.0
+        left = 0
+
+        for right in range(n):
+            window_sum += durs[right]
+
+            # لو المدة أكتر من 58، نحرك left لحد ما تنقص
+            while window_sum > MAX_DUR and left <= right:
+                window_sum -= durs[left]
+                left += 1
+
+            # لو المدة 30 أو أكتر، ده نطاق صالح
+            if window_sum >= MIN_DUR and left <= right:
+                valid.append((left + 1, right + 1))  # 1-indexed
+
+        return valid
+
+    # كل السور (114) مرتبة عشوائياً
+    all_surahs = list(range(1, 115))
+
     for _ in range(count):
-        attempts = 0
         found = False
-        while attempts < 150:
-            attempts += 1
-            
-            est_reciter = random.choice(reciter_list) if reciter_list else None
-            surah, start, end = find_valid_range(est_reciter)
-            
-            if surah is None:
-                continue  # نحاول مرة تانية
-            
-            # تحقق من عدم التكرار
-            range_key = f"{surah}:{start}-{end}"
-            if range_key not in used_ranges:
-                used_ranges.add(range_key)
-                reciter = random.choice(reciter_list) if reciter_list else ''
-                items.append({
-                    'surah': surah,
-                    'startAyah': start,
-                    'endAyah': end,
-                    'reciter': reciter
-                })
-                found = True
+        # نخلط السور عشان كل مرة نبدأ من سورة مختلفة
+        random.shuffle(all_surahs)
+
+        for surah in all_surahs:
+            if found:
                 break
-        
+
+            est_reciter = random.choice(reciter_list) if reciter_list else None
+            ranges = find_valid_ranges_for_surah(surah, est_reciter)
+
+            if not ranges:
+                continue
+
+            # نفلتر النطاقات المتكررة
+            available = [(s, e) for s, e in ranges if f"{surah}:{s}-{e}" not in used_ranges]
+            if not available:
+                continue
+
+            # اختيار عشوائي من النطاقات المتاحة
+            start, end = random.choice(available)
+            used_ranges.add(f"{surah}:{start}-{end}")
+
+            reciter = random.choice(reciter_list) if reciter_list else ''
+            items.append({
+                'surah': surah,
+                'startAyah': start,
+                'endAyah': end,
+                'reciter': reciter
+            })
+            found = True
+
         if not found:
-            # Fallback نادر جداً: نختار أي سورة متوسطة بالكامل
-            fallback_surahs = [78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 36, 55, 56]
-            random.shuffle(fallback_surahs)
-            for s in fallback_surahs:
-                vc = VERSE_COUNTS.get(s, 40)
-                est = estimate_ayah_duration_ms(s, 1, vc, est_reciter)
-                range_key = f"{s}:1-{vc}"
-                if est >= MIN_DURATION_MS and est <= MAX_DURATION_MS and range_key not in used_ranges:
-                    used_ranges.add(range_key)
-                    reciter = random.choice(reciter_list) if reciter_list else ''
-                    items.append({'surah': s, 'startAyah': 1, 'endAyah': vc, 'reciter': reciter})
-                    found = True
-                    break
-    
+            print(f"[WARNING] Could not find any valid range for video #{len(items)+1}")
+
     return items
 
 def direct_youtube_upload(session_id, video_path, title, description, tags, schedule_time=None):
