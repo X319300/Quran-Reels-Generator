@@ -715,6 +715,40 @@ def generate_random_schedule(total_videos, schedule_config):
     schedule_times.sort()
     return schedule_times
 
+def calculate_upload_delay(total_videos, schedule_config, current_index):
+    """
+    حساب التأخير المناسب بين الـ uploads عشان نحترم YouTube API limits.
+    
+    YouTube Data API v3 quota:
+    - videos.insert = 1,600 units لكل فيديو
+    - الحد اليومي = 10,000 units (default) = ~6 فيديوهات/يوم
+    
+    الاستراتيجية:
+    - لو عدد الفيديوهات <= 6: تأخير 30 ثانية (مفيش مشكلة)
+    - لو أكتر: نوزع على فترة الـ spread_days
+    - الحد الأدنى للتأخير = 60 ثانية
+    """
+    spread_days = schedule_config.get('spreadDays', 7)
+    
+    # لو عدد الفيديوهات قليل، تأخير بسيط بس عشان الـ rate limiting
+    if total_videos <= 6:
+        return 30  # 30 ثانية بين كل upload
+    
+    # حساب إجمالي الثواني المتاحة للـ spread
+    total_spread_seconds = spread_days * 24 * 3600
+    
+    # حساب التأخير بين كل فيديو
+    delay = total_spread_seconds / total_videos
+    
+    # الحد الأدنى 60 ثانية والحد الأقصى 30 دقيقة
+    delay = max(60, min(delay, 1800))
+    
+    # لو في فيديو واحد باقي، مفيش داعي للتأخير
+    if current_index >= total_videos - 1:
+        return 0
+    
+    return delay
+
 def estimate_ayah_duration_ms(surah, start_ayah, end_ayah, reciter_name=None):
     """
     Estimate video duration in milliseconds for given surah/ayah range using cached timing data.
@@ -1031,11 +1065,18 @@ def process_auto_publish(ap_id):
         tags = youtube_config.get('tags', [])
         should_upload = youtube_config.get('upload', True)
         
+        ap_check = db_get_auto_publish(ap_id)  # ✅ إبقاء القيمة مبدئياً عشان نتجنب UnboundLocalError
+        
         for i, item in enumerate(items):
+            # ✅ تخطي العناصر اللي اتعملت قبل كدا (Resume support)
+            if item['status'] in ('generated', 'published', 'upload_failed', 'quota_exceeded'):
+                print(f"[AutoPublish] [{i+1}/{total}] Skipping (already: {item['status']})")
+                continue
+            
             # Check cancellation
             ap_check = db_get_auto_publish(ap_id)
-            if ap_check and ap_check['status'] == 'cancelled':
-                print(f"[AutoPublish] Cancelled")
+            if ap_check and ap_check['status'] in ('cancelled', 'quota_paused'):
+                print(f"[AutoPublish] Stopped (status: {ap_check['status']})")
                 break
             
             job_id = item['job_id']
@@ -1135,21 +1176,53 @@ def process_auto_publish(ap_id):
                         )
                         print(f"[AutoPublish] [{i+1}/{total}] Published! Scheduled: {scheduled_time}")
                     else:
+                        error_msg = upload_result.get('error', 'Unknown error')
+                        
+                        # ✅ كشف خطأ الـ quota ووضع علامة خاصة
+                        is_quota_error = any(kw in error_msg.lower() for kw in ['quota', 'rate limit', 'dailylimitexceeded', '403'])
+                        
                         db_update_auto_publish_item(
                             ap_id, job_id,
-                            status='upload_failed',
-                            upload_error=upload_result.get('error', 'Unknown error'),
+                            status='quota_exceeded' if is_quota_error else 'upload_failed',
+                            upload_error=error_msg,
                             scheduled_time=scheduled_time
                         )
                         ap_data = db_get_auto_publish(ap_id)
                         failed = (ap_data['failed_videos'] or 0) + 1
                         db_update_auto_publish(ap_id, failed_videos=failed)
-                        print(f"[AutoPublish] [{i+1}/{total}] Upload failed: {upload_result.get('error', '')}")
+                        
+                        if is_quota_error:
+                            print(f"[AutoPublish] [{i+1}/{total}] ⚠️ YouTube QUOTA EXCEEDED - pausing batch")
+                            # ✅ تعليق الباتش مؤقتاً بدل إيقافه بالكامل
+                            db_update_auto_publish(ap_id, status='quota_paused')
+                            # ✅ حفظ مؤشر التقدم (نكمل من هنا لما الـ quota يرجع)
+                            conn = sqlite3.connect(DB_PATH)
+                            c = conn.cursor()
+                            c.execute("UPDATE auto_publish SET completed_videos = ? WHERE id = ?", (i, ap_id))
+                            conn.commit()
+                            conn.close()
+                            break
+                        
+                        print(f"[AutoPublish] [{i+1}/{total}] Upload failed: {error_msg}")
                 else:
                     # Just generated, no upload
                     db_update_auto_publish_item(ap_id, job_id, status='generated', scheduled_time=scheduled_time)
                     print(f"[AutoPublish] [{i+1}/{total}] Generated (no upload)")
                 
+                # ✅ Upload Delay - تأخير بين الـ uploads عشان نحترم YouTube API limits
+                if should_upload and i < len(items) - 1:
+                    delay_seconds = calculate_upload_delay(total, schedule_config, i)
+                    if delay_seconds > 0:
+                        print(f"[AutoPublish] [{i+1}/{total}] ⏳ Waiting {delay_seconds:.0f}s before next upload ({delay_seconds/60:.1f} min)...")
+                        # ننام على فترات عشان نقدر نتوقف فوراً لو الإلغاء
+                        wait_chunks = max(1, int(delay_seconds / 5))
+                        for _ in range(wait_chunks):
+                            time.sleep(delay_seconds / wait_chunks)
+                            # شيك إلغاء أثناء الانتظار
+                            ap_now = db_get_auto_publish(ap_id)
+                            if ap_now and ap_now['status'] in ('cancelled', 'quota_paused'):
+                                print(f"[AutoPublish] Stopped during wait (status: {ap_now['status']})")
+                                break
             except Exception as e:
                 print(f"[AutoPublish] [{i+1}/{total}] Error: {e}")
                 traceback.print_exc()
@@ -1158,20 +1231,26 @@ def process_auto_publish(ap_id):
                 failed = (ap_data['failed_videos'] or 0) + 1
                 db_update_auto_publish(ap_id, failed_videos=failed)
         
-        # Mark items that were skipped due to cancellation
-        if ap_check and ap_check['status'] == 'cancelled':
+        # Mark items that were skipped due to cancellation or quota pause
+        if ap_check and ap_check['status'] in ('cancelled', 'quota_paused'):
             for item in items:
                 if item['status'] == 'pending':
-                    db_update_auto_publish_item(ap_id, item['job_id'], status='cancelled')
-                    try:
-                        db_update_job(item['job_id'], status='cancelled', error='Auto-publish cancelled')
-                    except:
-                        pass
-            db_update_auto_publish(ap_id, completed_at=time.time())
-            print(f"[AutoPublish] Fully cancelled after {i}/{total} items")
+                    status_for_job = 'cancelled' if ap_check['status'] == 'cancelled' else 'pending'
+                    db_update_auto_publish_item(ap_id, item['job_id'], status=status_for_job)
+                    if ap_check['status'] == 'cancelled':
+                        try:
+                            db_update_job(item['job_id'], status='cancelled', error='Auto-publish cancelled')
+                        except:
+                            pass
+            
+            if ap_check['status'] == 'cancelled':
+                db_update_auto_publish(ap_id, completed_at=time.time())
+                print(f"[AutoPublish] Fully cancelled after {i}/{total} items")
+            else:
+                print(f"[AutoPublish] Quota paused after {i}/{total} items - can resume later")
             return
         
-        # Complete (only if not cancelled)
+        # Complete (only if not cancelled or paused)
         db_update_auto_publish(ap_id, status='complete', completed_at=time.time())
         ap_final = db_get_auto_publish(ap_id)
         print(f"[AutoPublish] Complete: {ap_final['completed_videos']}/{total} generated, {ap_final['uploaded_videos']} uploaded, {ap_final['failed_videos']} failed")
@@ -1210,9 +1289,19 @@ def process_auto_publish_queue():
                             AUTO_PUBLISH_QUEUE.remove(ap_id)
                             continue
                         
-                        if ap['status'] == 'pending':
+                        # ✅ quota_paused: مش بنشيله من الـ queue - بنسيبه ينتظر المستخدم يكمّل
+                        if ap['status'] == 'quota_paused':
+                            continue
+                        
+                        if ap['status'] in ('pending', 'running'):
+                            # ✅ لو 'running' يعني ممكن يكون السيرفر اتقف ورجع - بنحاول نكمّل
+                            if ap['status'] == 'running':
+                                print(f"[AutoPublish] Resuming previously running batch {ap_id[:8]}...")
+                                db_update_auto_publish(ap_id, status='pending')
+                            else:
+                                print(f"[AutoPublish] Starting {ap_id[:8]}...")
+                            
                             ACTIVE_AUTO_PUBLISH[ap_id] = True
-                            print(f"[AutoPublish] Starting {ap_id[:8]}...")
                             
                             t = threading.Thread(
                                 target=process_auto_publish,
@@ -4026,8 +4115,19 @@ def get_auto_publish_status():
     if ap['status'] == 'running':
         done = (ap['completed_videos'] or 0) + (ap['failed_videos'] or 0)
         remaining_videos = ap['total_videos'] - done
-        # Estimate ~60 seconds per video generation + ~30 seconds per upload
-        remaining = int(remaining_videos * 90)
+        if remaining_videos > 0:
+            # Estimate: ~60s generation + ~30s upload + upload delay for large batches
+            per_video = 90  # seconds
+            try:
+                sched = json.loads(ap['schedule_config_json'])
+                spread_days = sched.get('spreadDays', 7)
+                if ap['total_videos'] > 6:
+                    delay_per_video = (spread_days * 86400) / ap['total_videos']
+                    delay_per_video = max(60, min(delay_per_video, 1800))
+                    per_video += delay_per_video
+            except:
+                pass
+            remaining = int(remaining_videos * per_video)
     
     return jsonify({
         'ok': True,
@@ -4114,6 +4214,41 @@ def cancel_auto_publish():
     
     print(f"[AutoPublish] FULLY cancelled {ap_id[:8]} - cleaned {len(items)} items")
     return jsonify({'ok': True, 'message': 'Auto-publish cancelled and cleaned up'})
+
+@app.route('/api/auto-publish/resume', methods=['POST'])
+def resume_auto_publish():
+    """Resume a quota-paused auto-publish batch"""
+    d = request.json
+    ap_id = d.get('autoPublishId')
+    
+    if not ap_id:
+        return jsonify({'ok': False, 'error': 'autoPublishId required'}), 400
+    
+    ap = db_get_auto_publish(ap_id)
+    if not ap:
+        return jsonify({'ok': False, 'error': 'Batch not found'}), 404
+    
+    if ap['status'] != 'quota_paused':
+        return jsonify({'ok': False, 'error': f'Cannot resume batch with status: {ap["status"]}. Only quota_paused can be resumed.'}), 400
+    
+    # إعادة تعيين العناصر اللي فشلت بسبب الـ quota عشان تترفع تاني
+    items = db_get_auto_publish_items(ap_id)
+    retried = 0
+    for item in items:
+        if item['status'] == 'quota_exceeded':
+            db_update_auto_publish_item(ap_id, item['job_id'], status='pending')
+            retried += 1
+    
+    # إعادة تعيين حالة الباتش
+    db_update_auto_publish(ap_id, status='pending')
+    
+    # إضافة للـ queue تاني
+    with AUTO_PUBLISH_LOCK:
+        if ap_id not in AUTO_PUBLISH_QUEUE:
+            AUTO_PUBLISH_QUEUE.append(ap_id)
+    
+    print(f"[AutoPublish] Resumed {ap_id[:8]} - retrying {retried} items")
+    return jsonify({'ok': True, 'message': f'Batch resumed - retrying {retried} failed uploads', 'retried': retried})
 
 # ==========================================
 # 🚀 Application Startup (Correct Order!)

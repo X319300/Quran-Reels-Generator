@@ -1675,9 +1675,19 @@
                         </div>
 
                         <!-- Cancel Button -->
-                        <button type="button" class="btn-secondary btn-stop" style="margin-top: 16px;" onclick="cancelAutoPublish()">
+                        <button type="button" id="ap-cancel-btn" class="btn-secondary btn-stop" style="margin-top: 16px;" onclick="cancelAutoPublish()">
                             🛑 إلغاء النشر التلقائي
                         </button>
+
+                        <!-- Resume Button (shown when quota_paused) -->
+                        <button type="button" id="ap-resume-btn" class="btn-secondary" style="margin-top: 8px; display: none; background: #ff9800; color: white; border: none; padding: 10px 24px; border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 0.9rem;" onclick="resumeAutoPublish(currentAutoPublishId)">
+                            ▶️ استئناف النشر (بعد استعادة حصة YouTube)
+                        </button>
+
+                        <!-- Quota Info -->
+                        <div id="ap-quota-info" style="display: none; margin-top: 12px; padding: 10px; background: rgba(255,152,0,0.1); border: 1px solid rgba(255,152,0,0.3); border-radius: 8px; font-size: 0.8rem; color: #ff9800;">
+                            ⚠️ نفذت الحصة اليومية لـ YouTube API (10,000 units). الحصة تتجدد كل 24 ساعة. اضغط "استئناف" لما ترجع.
+                        </div>
                     </div>
 
                     <!-- Items List -->
@@ -3598,7 +3608,21 @@
 
                 if (data.ok) {
                     currentAutoPublishId = data.autoPublishId;
-                    showToast(`تم إنشاء ${data.totalVideos} فيديو - جاري المعالجة`, 'success');
+                    
+                    // ✅ حساب الوقت المتوقع للباتشات الكبيرة
+                    let extraInfo = '';
+                    if (data.totalVideos > 6) {
+                        const estSeconds = data.totalVideos * 90; // ~90 ثانية لكل فيديو (تصنيع + رفع)
+                        const estMinutes = Math.ceil(estSeconds / 60);
+                        if (estMinutes >= 60) {
+                            const hours = Math.floor(estMinutes / 60);
+                            const mins = estMinutes % 60;
+                            extraInfo = ` (الوقت المتوقع: ~${hours} ساعة و ${mins} دقيقة)`;
+                        } else {
+                            extraInfo = ` (الوقت المتوقع: ~${estMinutes} دقيقة)`;
+                        }
+                    }
+                    showToast(`تم إنشاء ${data.totalVideos} فيديو - جاري المعالجة${extraInfo}`, 'success');
                     showAutoPublishProgress();
                     startAutoPublishPolling();
                     loadAutoPublishList();
@@ -3620,9 +3644,11 @@
                 if (data.ok) {
                     updateAutoPublishUI(data.autoPublish);
 
-                    if (data.autoPublish.status === 'complete' || data.autoPublish.status === 'cancelled' || data.autoPublish.status === 'error') {
+                    if (data.autoPublish.status === 'complete' || data.autoPublish.status === 'cancelled' || data.autoPublish.status === 'error' || data.autoPublish.status === 'quota_paused') {
                         stopAutoPublishPolling();
-                        localStorage.removeItem('activeAutoPublishId');
+                        if (data.autoPublish.status !== 'quota_paused') {
+                            localStorage.removeItem('activeAutoPublishId');
+                        }
                         loadAutoPublishList();
                     }
                 }
@@ -3715,12 +3741,21 @@
                 'running': '🔄 جاري المعالجة...',
                 'complete': '✅ اكتمل!',
                 'cancelled': '⚠️ ملغي',
-                'error': '❌ حدث خطأ'
+                'error': '❌ حدث خطأ',
+                'quota_paused': '⏸️ توقف مؤقتاً (نفذ حصة YouTube)'
             };
             // Only use statusMap for non-running statuses (we set running status above)
             if (statusEl && ap.status !== 'running') {
                 statusEl.textContent = statusMap[ap.status] || ap.status;
             }
+
+            // ✅ إظهار/إخفاء زر الاستئناف ومعلومات الحصة
+            const resumeBtn = document.getElementById('ap-resume-btn');
+            const quotaInfo = document.getElementById('ap-quota-info');
+            const cancelBtn = document.getElementById('ap-cancel-btn');
+            if (resumeBtn) resumeBtn.style.display = ap.status === 'quota_paused' ? 'inline-block' : 'none';
+            if (quotaInfo) quotaInfo.style.display = ap.status === 'quota_paused' ? 'block' : 'none';
+            if (cancelBtn) cancelBtn.style.display = (ap.status === 'running' || ap.status === 'pending') ? 'inline-block' : 'none';
 
             showAutoPublishProgress();
 
@@ -3777,6 +3812,7 @@
                 'uploading': 'background: #3b2f1a; color: #fbbf24;',
                 'published': 'background: #14532d; color: #22c55e;',
                 'upload_failed': 'background: #3b1a1a; color: #f87171;',
+                'quota_exceeded': 'background: #4a2000; color: #ff9800;',
                 'error': 'background: #3b1a1a; color: #f87171;',
             };
             const labels = {
@@ -3786,6 +3822,7 @@
                 'uploading': 'رفع',
                 'published': 'منشور',
                 'upload_failed': 'فشل الرفع',
+                'quota_exceeded': 'نفذ الحصة',
                 'error': 'خطأ',
             };
             const style = styles[status] || styles.pending;
@@ -3844,16 +3881,46 @@
             if (!confirm('هل أنت متأكد من إلغاء النشر التلقائي؟')) return;
 
             try {
-                await fetch('/api/auto-publish/cancel', {
+                const res = await fetch('/api/auto-publish/cancel', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ autoPublishId: currentAutoPublishId })
                 });
+                const data = await res.json();
                 stopAutoPublishPolling();
-                showToast('تم الإلغاء', 'info');
+                localStorage.removeItem('activeAutoPublishId');
+                if (data.ok) {
+                    showToast('تم الإلغاء بنجاح', 'info');
+                } else {
+                    showToast(data.error || 'حدث خطأ في الإلغاء', 'error');
+                }
                 loadAutoPublishList();
             } catch (e) {
-                showToast('خطأ', 'error');
+                showToast('خطأ في الاتصال', 'error');
+            }
+        }
+
+        async function resumeAutoPublish(apId) {
+            if (!confirm('هل تريد استئناف النشر التلقائي؟ (سيتم إعادة محاولة الرفع للفيديوهات الفاشلة)')) return;
+
+            try {
+                const res = await fetch('/api/auto-publish/resume', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ autoPublishId: apId })
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    currentAutoPublishId = apId;
+                    localStorage.setItem('activeAutoPublishId', apId);
+                    showToast(`تم الاستئناف - جاري إعادة محاولة ${data.retried} فيديو`, 'success');
+                    startAutoPublishPolling();
+                    loadAutoPublishList();
+                } else {
+                    showToast(data.error || 'حدث خطأ', 'error');
+                }
+            } catch (e) {
+                showToast('خطأ في الاتصال', 'error');
             }
         }
 
@@ -3874,9 +3941,10 @@
                 }
 
                 listEl.innerHTML = data.batches.map(b => {
-                    const statusColor = b.status === 'complete' ? '#22c55e' : b.status === 'running' ? '#60a5fa' : b.status === 'cancelled' ? '#f59e0b' : '#f87171';
+                    const statusColor = b.status === 'complete' ? '#22c55e' : b.status === 'running' ? '#60a5fa' : b.status === 'cancelled' ? '#f59e0b' : b.status === 'quota_paused' ? '#ff9800' : '#f87171';
                     const date = new Date(b.createdAt * 1000).toLocaleDateString('ar-EG');
-                    const statusLabel = b.status === 'running' ? '🔄 جاري' : b.status === 'complete' ? '✅ مكتمل' : b.status === 'cancelled' ? '⚠️ ملغي' : '❌ خطأ';
+                    const statusLabel = b.status === 'running' ? '🔄 جاري' : b.status === 'complete' ? '✅ مكتمل' : b.status === 'cancelled' ? '⚠️ ملغي' : b.status === 'quota_paused' ? '⏸️ متوقف' : '❌ خطأ';
+                    const resumeBtn = b.status === 'quota_paused' ? `<button onclick="event.stopPropagation(); resumeAutoPublish('${b.id}')" style="background: #ff9800; color: white; border: none; padding: 5px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-family: inherit; white-space: nowrap; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">▶️ استئناف</button>` : '';
                     return `
                         <div class="ap-history-item" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.05);">
                             <div>
@@ -3885,10 +3953,11 @@
                                 <span style="color: #888; font-size: 12px;">${date}</span>
                                 <span style="color: ${statusColor}; font-size: 11px; margin-right: 8px;">${statusLabel}</span>
                             </div>
-                            <div style="display: flex; align-items: center; gap: 12px;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
                                 <span style="font-size: 12px; color: #888;">
                                     ✅ ${b.completedVideos || 0} | 📤 ${b.uploadedVideos || 0} | ❌ ${b.failedVideos || 0}
                                 </span>
+                                ${resumeBtn}
                                 <button onclick="event.stopPropagation(); viewAutoPublish('${b.id}')" style="background: var(--accent); color: white; border: none; padding: 5px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-family: inherit; white-space: nowrap; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">📊 عرض التقدم</button>
                             </div>
                         </div>
@@ -3905,13 +3974,13 @@
             startAutoPublishPolling();
         }
 
-        // ✅ فحص تلقائي عند تحميل الصفحة - لو فيه batch شغال نعرض التقدم
+        // ✅ فحص تلقائي عند تحميل الصفحة - لو فيه batch شغال أو متوقف نعرض التقدم
         async function checkActiveAutoPublish() {
             try {
                 const res = await fetch(`/api/auto-publish/list?sessionId=${encodeURIComponent(SESSION_ID)}`);
                 const data = await res.json();
                 if (data.ok && data.batches) {
-                    const activeBatch = data.batches.find(b => b.status === 'running' || b.status === 'pending');
+                    const activeBatch = data.batches.find(b => b.status === 'running' || b.status === 'pending' || b.status === 'quota_paused');
                     if (activeBatch) {
                         currentAutoPublishId = activeBatch.id;
                         localStorage.setItem('activeAutoPublishId', activeBatch.id);
