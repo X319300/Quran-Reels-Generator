@@ -773,9 +773,9 @@ def estimate_ayah_duration_ms(surah, start_ayah, end_ayah, reciter_name=None):
 
 def generate_random_video_items(count, reciter_ids=None):
     """
-    Generate random surah/ayah combinations targeting videos UNDER 60 seconds.
-    Each item gets a random reciter from reciter_ids list.
-    Avoids duplicates and tries to pick diverse surahs.
+    Generate random surah/ayah combinations targeting videos 30-60 seconds.
+    كل فيديو لازم يكون 30 ثانية على الأقل.
+    لو الآيات القليلة مش كفاية، يدور على سورة/نطاق تاني عشوائي.
     Returns: list of {surah, startAyah, endAyah, reciter}
     """
     items = []
@@ -784,59 +784,87 @@ def generate_random_video_items(count, reciter_ids=None):
     # Use provided reciters or fallback to empty (will be set later)
     reciter_list = reciter_ids if reciter_ids else []
     
-    # Prefer shorter surahs for reels (surah 78-114 are good candidates)
-    preferred_surahs = list(range(78, 115)) + [36, 55, 56, 67, 50, 73, 74, 75, 76, 77]
+    # كل السور اللي فيها آيات كفاية لعمل فيديو 30+ ثانية (معظم السور)
+    preferred_surahs = list(range(36, 115)) + [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
     
-    MAX_DURATION_MS = 58000  # 58 seconds (leaving 2s margin)
+    MAX_DURATION_MS = 58000  # 58 seconds
     MIN_DURATION_MS = 30000  # 30 seconds minimum
+    
+    def find_valid_range(reciter):
+        """
+        يدور على نطاق آيات عشوائي يكون بين 30-58 ثانية.
+        يبدأ من بداية سورة عشوائية وينمو آية آية.
+        لو السورة مش كفاية، يجرب سورة تانية.
+        """
+        # نخلط السور ونحاول
+        shuffled = preferred_surahs.copy()
+        random.shuffle(shuffled)
+        # نضيف باقي السور كـ fallback
+        all_surahs = shuffled + [s for s in range(1, 115) if s not in shuffled]
+        
+        for surah in all_surahs:
+            verse_count = VERSE_COUNTS.get(surah, 20)
+            if verse_count < 3:
+                continue  # سورة قصيرة أوي، مش هتكفي
+            
+            # نحاول عدة بدايات عشوائية في نفس السورة
+            for _ in range(3):
+                # نختار بداية عشوائية مع مساحة كفاية بعدها
+                max_start = max(1, verse_count - 3)
+                start = random.randint(1, max_start)
+                
+                # نوسّع آية آية من البداية لحد ما نوصل 30+ ثانية
+                end = start
+                found_min = False
+                
+                while end <= verse_count:
+                    est_ms = estimate_ayah_duration_ms(surah, start, end, reciter)
+                    
+                    if est_ms >= MAX_DURATION_MS:
+                        # أكتر من 58 ثانية - نشيل آخر آية ونرجع
+                        if end > start:
+                            end -= 1
+                        break
+                    
+                    if est_ms >= MIN_DURATION_MS:
+                        # وصلنا 30+ ثانية - نتحقق إن النطاق متكررش
+                        found_min = True
+                    
+                    end += 1
+                
+                # لو وصلنا لآخر السورة بدون ما نوصل 30 ثانية
+                if end > verse_count and not found_min:
+                    continue  # نحاول سورة/بداية تانية
+                
+                # نتأكد إن عندنا على الأقل 30 ثانية
+                final_est = estimate_ayah_duration_ms(surah, start, min(end, verse_count), reciter)
+                if final_est < MIN_DURATION_MS:
+                    continue
+                
+                end = min(end, verse_count)
+                end = max(start, end)
+                
+                # لو وصلنا هنا، عندنا نطاق صالح بين 30-58 ثانية
+                return surah, start, end
+        
+        return None, None, None  # لم نجد
     
     for _ in range(count):
         attempts = 0
         found = False
-        while attempts < 80:
+        while attempts < 150:
             attempts += 1
             
-            # Pick a surah (80% chance from preferred short surahs)
-            if random.random() < 0.8 and preferred_surahs:
-                surah = random.choice(preferred_surahs)
-            else:
-                surah = random.randint(1, 114)
-            
-            verse_count = VERSE_COUNTS.get(surah, 20)
-            
-            # Pick start ayah
-            start = random.randint(1, max(1, verse_count))
-            
-            # Try adding ayahs one by one until we approach MAX_DURATION
-            end = start
-            # Pick a random reciter for estimation
             est_reciter = random.choice(reciter_list) if reciter_list else None
+            surah, start, end = find_valid_range(est_reciter)
             
-            for _ in range(min(20, verse_count - start + 1)):
-                est_ms = estimate_ayah_duration_ms(surah, start, end, est_reciter)
-                if est_ms > MAX_DURATION_MS:
-                    # Too long, remove last ayah
-                    if end > start:
-                        end -= 1
-                    break
-                end += 1
-                if end > verse_count:
-                    end = verse_count
-                    break
+            if surah is None:
+                continue  # نحاول مرة تانية
             
-            # Ensure at least 1 ayah
-            end = max(start, end)
-            
-            # Check minimum duration
-            est_ms = estimate_ayah_duration_ms(surah, start, end, est_reciter)
-            if est_ms < MIN_DURATION_MS:
-                continue  # Too short, try again
-            
-            # Check for duplicates
+            # تحقق من عدم التكرار
             range_key = f"{surah}:{start}-{end}"
             if range_key not in used_ranges:
                 used_ranges.add(range_key)
-                # Assign a random reciter from the selected list
                 reciter = random.choice(reciter_list) if reciter_list else ''
                 items.append({
                     'surah': surah,
@@ -848,40 +876,19 @@ def generate_random_video_items(count, reciter_ids=None):
                 break
         
         if not found:
-            # Fallback: إيجاد نطاق آيات يحقق الحد الأدنى 30 ثانية
-            # نختار سورة ونوسّع النطاق لحد ما نوصل 30 ثانية
-            fb_found = False
-            fb_attempts = 0
-            while fb_attempts < 30 and not fb_found:
-                fb_attempts += 1
-                surah = random.randint(1, 114)
-                verse_count = VERSE_COUNTS.get(surah, 20)
-                start = random.randint(1, max(1, verse_count))
-                
-                # نوسّع النطاق آية آية لحد ما نوصل 30 ثانية
-                fb_end = start
-                fb_reciter = random.choice(reciter_list) if reciter_list else None
-                while fb_end <= verse_count:
-                    fb_est = estimate_ayah_duration_ms(surah, start, fb_end, fb_reciter)
-                    if fb_est >= MIN_DURATION_MS:
-                        fb_end_final = fb_end
-                        # نتأكد إنه مش أكتر من 60 ثانية
-                        if fb_est > MAX_DURATION_MS:
-                            fb_end_final = fb_end - 1 if fb_end > start else fb_end
-                            fb_est = estimate_ayah_duration_ms(surah, start, fb_end_final, fb_reciter)
-                        range_key = f"{surah}:{start}-{fb_end_final}"
-                        if range_key not in used_ranges:
-                            reciter = random.choice(reciter_list) if reciter_list else ''
-                            used_ranges.add(range_key)
-                            items.append({
-                                'surah': surah,
-                                'startAyah': start,
-                                'endAyah': fb_end_final,
-                                'reciter': reciter
-                            })
-                            fb_found = True
-                        break
-                    fb_end += 1
+            # Fallback نادر جداً: نختار أي سورة متوسطة بالكامل
+            fallback_surahs = [78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 36, 55, 56]
+            random.shuffle(fallback_surahs)
+            for s in fallback_surahs:
+                vc = VERSE_COUNTS.get(s, 40)
+                est = estimate_ayah_duration_ms(s, 1, vc, est_reciter)
+                range_key = f"{s}:1-{vc}"
+                if est >= MIN_DURATION_MS and est <= MAX_DURATION_MS and range_key not in used_ranges:
+                    used_ranges.add(range_key)
+                    reciter = random.choice(reciter_list) if reciter_list else ''
+                    items.append({'surah': s, 'startAyah': 1, 'endAyah': vc, 'reciter': reciter})
+                    found = True
+                    break
     
     return items
 
