@@ -3353,11 +3353,19 @@
 
         let apRecitersReady = false;
 
+        function apSyncRecitersToStorage() {
+            // Save selected reciters to localStorage (same key as batch export)
+            const selected = getSelectedReciters();
+            localStorage.setItem('selectedRecitersForRandom', JSON.stringify(selected));
+        }
+
         function apSelectAllReciters() {
             document.querySelectorAll('#ap-reciters-list input[type=checkbox]').forEach(cb => cb.checked = true);
+            apSyncRecitersToStorage();
         }
         function apDeselectAllReciters() {
             document.querySelectorAll('#ap-reciters-list input[type=checkbox]').forEach(cb => cb.checked = false);
+            apSyncRecitersToStorage();
         }
         function getSelectedReciters() {
             const checked = document.querySelectorAll('#ap-reciters-list input[type=checkbox]:checked');
@@ -3370,13 +3378,23 @@
             const mainReciter = document.getElementById('reciterSelect');
             if (recitersList && mainReciter && !apRecitersReady) {
                 recitersList.innerHTML = '';
+
+                // Load saved reciters from localStorage (same source as batch export)
+                let savedReciters = [];
+                try {
+                    const saved = localStorage.getItem('selectedRecitersForRandom');
+                    if (saved) savedReciters = JSON.parse(saved);
+                } catch (e) { savedReciters = []; }
+
                 for (let i = 0; i < mainReciter.options.length; i++) {
                     const opt = mainReciter.options[i];
                     const label = document.createElement('label');
                     label.style.cssText = 'display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: background 0.2s;';
                     label.onmouseover = () => label.style.background = 'rgba(255,255,255,0.05)';
                     label.onmouseout = () => label.style.background = 'transparent';
-                    label.innerHTML = `<input type="checkbox" value="${opt.value}" style="accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer;"> <span>${opt.text}</span>`;
+                    // If saved reciters exist, check only those; otherwise check all
+                    const isChecked = savedReciters.length === 0 || savedReciters.includes(opt.value);
+                    label.innerHTML = `<input type="checkbox" value="${opt.value}" ${isChecked ? 'checked' : ''} onchange="apSyncRecitersToStorage()" style="accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer;"> <span>${opt.text}</span>`;
                     recitersList.appendChild(label);
                 }
                 apRecitersReady = true;
