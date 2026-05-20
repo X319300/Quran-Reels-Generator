@@ -3178,13 +3178,19 @@
         }
 
         let batchPollInterval = null;
+        let batchRemainingSeconds = 0;
+        let batchCountdownInterval = null;
+        let batchLastCompleted = 0;
 
         function startBatchPolling(batchId) {
             if (batchPollInterval) clearInterval(batchPollInterval);
+            stopBatchCountdown();
+            batchLastCompleted = 0;
             
             batchPollInterval = setInterval(async () => {
                 if (batchCancelled) {
                     clearInterval(batchPollInterval);
+                    stopBatchCountdown();
                     return;
                 }
                 
@@ -3197,6 +3203,7 @@
                         
                         if (data.batch.status === 'complete' || data.batch.status === 'cancelled') {
                             clearInterval(batchPollInterval);
+                            stopBatchCountdown();
                             
                             if (data.batch.status === 'complete') {
                                 showToast(`تم إنشاء ${data.batch.completedJobs} فيديو بنجاح!`, 'success');
@@ -3242,24 +3249,34 @@
                     currentVideoEl.style.display = 'none';
                 }
                 
-                // عرض الوقت المتبقي
+                // عرض الوقت المتبقي (smooth countdown)
                 if (batch.remainingTime !== null && batch.remainingTime !== undefined) {
+                    const newDone = batch.completedJobs || 0;
+                    if (newDone !== batchLastCompleted) {
+                        batchRemainingSeconds = batch.remainingTime;
+                        batchLastCompleted = newDone;
+                    }
                     remainingTimeEl.style.display = 'block';
-                    remainingTimeValueEl.textContent = formatTime(batch.remainingTime);
+                    remainingTimeValueEl.textContent = formatTime(batchRemainingSeconds);
+                    startBatchCountdown();
                 } else {
                     remainingTimeEl.style.display = 'none';
+                    stopBatchCountdown();
                 }
             } else if (batch.status === 'complete') {
                 statusEl.textContent = `✅ اكتمل!`;
                 currentVideoEl.style.display = 'none';
                 remainingTimeEl.style.display = 'none';
+                stopBatchCountdown();
             } else if (batch.status === 'cancelled') {
                 statusEl.textContent = `⚠️ تم الإلغاء`;
                 currentVideoEl.style.display = 'none';
                 remainingTimeEl.style.display = 'none';
+                stopBatchCountdown();
             } else if (batch.status === 'pending') {
                 statusEl.textContent = `⏳ في الانتظار...`;
                 currentVideoEl.style.display = 'none';
+                stopBatchCountdown();
                 remainingTimeEl.style.display = 'none';
             }
         }
@@ -3276,6 +3293,25 @@
                 return `${hours} ساعة ${remainMins} د`;
             }
             return `${mins} د ${secs} ث`;
+        }
+
+        // Smooth countdown for batch remaining time
+        function startBatchCountdown() {
+            stopBatchCountdown();
+            batchCountdownInterval = setInterval(() => {
+                if (batchRemainingSeconds > 0) {
+                    batchRemainingSeconds--;
+                    const el = document.getElementById('batchRemainingTimeValue');
+                    if (el) el.textContent = formatTime(batchRemainingSeconds);
+                }
+            }, 1000);
+        }
+
+        function stopBatchCountdown() {
+            if (batchCountdownInterval) {
+                clearInterval(batchCountdownInterval);
+                batchCountdownInterval = null;
+            }
         }
 
         function initBatchPage() {
@@ -3340,6 +3376,9 @@
         // ═══════════════════════════════════════
         let currentAutoPublishId = null;
         let autoPublishPolling = null;
+        let apRemainingSeconds = 0;       // Live countdown value (decreases every second)
+        let apCountdownInterval = null;   // 1-second timer for smooth countdown
+        let apLastCompleted = 0;          // Last known completed count (to recalculate from server)
         let SURAH_NAMES = [];
 
         // Initialize auto-publish page when tab is clicked
@@ -3519,6 +3558,7 @@
                 clearInterval(autoPublishPolling);
                 autoPublishPolling = null;
             }
+            stopApCountdown();
         }
 
         function updateAutoPublishUI(ap) {
@@ -3533,7 +3573,18 @@
             if (completedEl) completedEl.textContent = ap.completedVideos || 0;
             if (uploadedEl) uploadedEl.textContent = ap.uploadedVideos || 0;
             if (failedEl) failedEl.textContent = ap.failedVideos || 0;
-            if (remainingEl) remainingEl.textContent = ap.remainingTime ? formatAPTime(ap.remainingTime) : '--';
+            // Update countdown timer from server
+            if (ap.remainingTime !== null && ap.remainingTime !== undefined) {
+                const newCompleted = ap.completedVideos || 0;
+                if (newCompleted !== apLastCompleted) {
+                    apRemainingSeconds = ap.remainingTime;
+                    apLastCompleted = newCompleted;
+                }
+                startApCountdown();
+            } else {
+                stopApCountdown();
+            }
+            if (remainingEl) remainingEl.textContent = apRemainingSeconds > 0 ? formatAPTime(apRemainingSeconds) : (ap.status !== 'running' ? '--' : '00:00');
 
             const statusMap = {
                 'pending': '⏳ في الانتظار...',
@@ -3625,15 +3676,34 @@
         }
 
         function formatAPTime(seconds) {
-            if (!seconds) return '--:--';
+            if (!seconds || seconds <= 0) return '00:00';
             const m = Math.floor(seconds / 60);
             const s = seconds % 60;
             if (m >= 60) {
                 const h = Math.floor(m / 60);
                 const rm = m % 60;
-                return `${h}:${rm.toString().padStart(2, '0')}`;
+                return `${h}:${rm.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
             }
             return `${m}:${s.toString().padStart(2, '0')}`;
+        }
+
+        // Smooth countdown: ticks every second so the user sees progress
+        function startApCountdown() {
+            stopApCountdown();
+            apCountdownInterval = setInterval(() => {
+                if (apRemainingSeconds > 0) {
+                    apRemainingSeconds--;
+                    const el = document.getElementById('ap-remaining');
+                    if (el) el.textContent = formatAPTime(apRemainingSeconds);
+                }
+            }, 1000);
+        }
+
+        function stopApCountdown() {
+            if (apCountdownInterval) {
+                clearInterval(apCountdownInterval);
+                apCountdownInterval = null;
+            }
         }
 
         function showAutoPublishProgress() {
