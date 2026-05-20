@@ -3538,6 +3538,13 @@
 
             // Load auto-publish history
             loadAutoPublishList();
+
+            // ✅ لو كان فيه batch شغال محفوظ في localStorage، نعرض التقدم
+            const savedApId = localStorage.getItem('activeAutoPublishId');
+            if (savedApId) {
+                currentAutoPublishId = savedApId;
+                startAutoPublishPolling();
+            }
         }
 
         async function startAutoPublish() {
@@ -3615,6 +3622,7 @@
 
                     if (data.autoPublish.status === 'complete' || data.autoPublish.status === 'cancelled' || data.autoPublish.status === 'error') {
                         stopAutoPublishPolling();
+                        localStorage.removeItem('activeAutoPublishId');
                         loadAutoPublishList();
                     }
                 }
@@ -3868,15 +3876,20 @@
                 listEl.innerHTML = data.batches.map(b => {
                     const statusColor = b.status === 'complete' ? '#22c55e' : b.status === 'running' ? '#60a5fa' : b.status === 'cancelled' ? '#f59e0b' : '#f87171';
                     const date = new Date(b.createdAt * 1000).toLocaleDateString('ar-EG');
+                    const statusLabel = b.status === 'running' ? '🔄 جاري' : b.status === 'complete' ? '✅ مكتمل' : b.status === 'cancelled' ? '⚠️ ملغي' : '❌ خطأ';
                     return `
-                        <div class="ap-history-item" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.05); cursor: pointer;" onclick="viewAutoPublish('${b.id}')">
+                        <div class="ap-history-item" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.05);">
                             <div>
                                 <span style="color: ${statusColor}; font-size: 12px;">●</span>
                                 <span style="margin-right: 8px; font-size: 14px;">${b.totalVideos} فيديو</span>
                                 <span style="color: #888; font-size: 12px;">${date}</span>
+                                <span style="color: ${statusColor}; font-size: 11px; margin-right: 8px;">${statusLabel}</span>
                             </div>
-                            <div style="font-size: 12px; color: #888;">
-                                ✅ ${b.completedVideos || 0} | 📤 ${b.uploadedVideos || 0} | ❌ ${b.failedVideos || 0}
+                            <div style="display: flex; align-items: center; gap: 12px;">
+                                <span style="font-size: 12px; color: #888;">
+                                    ✅ ${b.completedVideos || 0} | 📤 ${b.uploadedVideos || 0} | ❌ ${b.failedVideos || 0}
+                                </span>
+                                <button onclick="event.stopPropagation(); viewAutoPublish('${b.id}')" style="background: var(--accent); color: white; border: none; padding: 5px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-family: inherit; white-space: nowrap; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">📊 عرض التقدم</button>
                             </div>
                         </div>
                     `;
@@ -3888,8 +3901,37 @@
 
         function viewAutoPublish(apId) {
             currentAutoPublishId = apId;
+            localStorage.setItem('activeAutoPublishId', apId);
             startAutoPublishPolling();
         }
+
+        // ✅ فحص تلقائي عند تحميل الصفحة - لو فيه batch شغال نعرض التقدم
+        async function checkActiveAutoPublish() {
+            try {
+                const res = await fetch(`/api/auto-publish/list?sessionId=${encodeURIComponent(SESSION_ID)}`);
+                const data = await res.json();
+                if (data.ok && data.batches) {
+                    const activeBatch = data.batches.find(b => b.status === 'running' || b.status === 'pending');
+                    if (activeBatch) {
+                        currentAutoPublishId = activeBatch.id;
+                        localStorage.setItem('activeAutoPublishId', activeBatch.id);
+                        // لو التاب ده مفتوح، اعرض التقدم مباشرة
+                        const panel = document.getElementById('autopublish-panel');
+                        if (panel && panel.style.display !== 'none') {
+                            initAutoPublishPage();
+                            startAutoPublishPolling();
+                        }
+                        return;
+                    }
+                }
+                // لو مفيش batch شغال، امسح الـ localStorage
+                localStorage.removeItem('activeAutoPublishId');
+            } catch (err) {
+                console.log('No active auto-publish batches');
+            }
+        }
+        // فحص تلقائي بعد ثانية
+        setTimeout(checkActiveAutoPublish, 1500);
 
         async function checkYouTubeAuth() {
             const session = SESSION_ID;
