@@ -717,7 +717,7 @@ def generate_random_video_items(count, reciter_ids=None):
     preferred_surahs = list(range(78, 115)) + [36, 55, 56, 67, 50, 73, 74, 75, 76, 77]
     
     MAX_DURATION_MS = 58000  # 58 seconds (leaving 2s margin)
-    MIN_DURATION_MS = 10000  # 10 seconds minimum
+    MIN_DURATION_MS = 25000  # 25 seconds minimum
     
     for _ in range(count):
         attempts = 0

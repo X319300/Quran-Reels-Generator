@@ -1571,7 +1571,7 @@
                     <!-- قالب العنوان -->
                     <div class="form-group">
                         <label class="form-label">📌 قالب العنوان</label>
-                        <input type="text" class="form-input" id="ap-title-template" value="Quran - {surah_name} ({ayah_range}) | {reciter}" placeholder="مثال: Quran - {surah_name} ({ayah_range})">
+                        <input type="text" class="form-input" id="ap-title-template" value="قرآن كريم {surah_name} ({ayah_range}) بصوت القارئ {reciter}" placeholder="مثال: قرآن كريم {surah_name} ({ayah_range})">
                         <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">
                             المتاح: {surah_name}, {surah_number}, {ayah_range}, {start_ayah}, {end_ayah}, {reciter}
                         </div>
@@ -1580,9 +1580,7 @@
                     <!-- وصف الفيديو -->
                     <div class="form-group">
                         <label class="form-label">📝 وصف الفيديو</label>
-                        <textarea class="form-input" id="ap-description" style="height: 80px; padding: 12px 16px; resize: vertical;" placeholder="وصف اختياري للفيديو...">قرآن كريم من سورة {surah_name} بصوت القارئ {reciter}
-
-#قران_كريم #قرآن #quran #تلاوة #قرآن_كريم</textarea>
+                        <textarea class="form-input" id="ap-description" style="height: 80px; padding: 12px 16px; resize: vertical;" placeholder="وصف اختياري للفيديو...">#قران_كريم #قران #quran #fyp #قرآن_كريم_راحة_نفسية #shorts</textarea>
                     </div>
 
                     <!-- التاغات -->
@@ -3567,9 +3565,9 @@
             const aspectRatio = document.getElementById('ap-aspect-ratio')?.value || '9:16';
             const font = document.getElementById('ap-font-select')?.value || 'Arabic';
             const fontEn = document.getElementById('ap-font-en-select')?.value || 'English';
-            const titleTemplate = document.getElementById('ap-title-template')?.value || 'Quran - {surah_name} ({ayah_range})';
-            const descriptionTemplate = document.getElementById('ap-description')?.value || '';
-            const tags = document.getElementById('ap-tags')?.value?.split(',').map(t => t.trim()).filter(Boolean) || ['quran', 'قرآن'];
+            const titleTemplate = document.getElementById('ap-title-template')?.value || 'قرآن كريم {surah_name} ({ayah_range}) بصوت القارئ {reciter}';
+            const descriptionTemplate = document.getElementById('ap-description')?.value || '#قران_كريم #قران #quran #fyp #قرآن_كريم_راحة_نفسية #shorts';
+            const tags = document.getElementById('ap-tags')?.value?.split(',').map(t => t.trim()).filter(Boolean) || ['قرآن كريم', 'تلاوة', 'إسلام', 'Quran', 'قرآن', 'تلاوة قرآنية'];
             const spreadDays = parseInt(document.getElementById('ap-spread-days')?.value || 7);
             const timeStart = parseInt(document.getElementById('ap-time-start')?.value || 14);
             const timeEnd = parseInt(document.getElementById('ap-time-end')?.value || 22);
