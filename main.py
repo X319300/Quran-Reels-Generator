@@ -777,27 +777,40 @@ def generate_random_video_items(count, reciter_ids=None):
                 break
         
         if not found:
-            # Fallback: pick a very short surah fully
-            surah = random.choice([112, 113, 114, 108, 109, 110, 111, 103, 105, 106, 107])
-            verse_count = VERSE_COUNTS.get(surah, 6)
-            reciter = random.choice(reciter_list) if reciter_list else ''
-            range_key = f"{surah}:1-{verse_count}"
-            if range_key not in used_ranges:
-                used_ranges.add(range_key)
-                items.append({
-                    'surah': surah,
-                    'startAyah': 1,
-                    'endAyah': verse_count,
-                    'reciter': reciter
-                })
-            else:
-                # Last resort: any short surah with 1 ayah
-                for s in [112, 113, 114, 108]:
-                    rk = f"{s}:1-1"
-                    if rk not in used_ranges:
-                        used_ranges.add(rk)
-                        items.append({'surah': s, 'startAyah': 1, 'endAyah': 1, 'reciter': reciter})
+            # Fallback: إيجاد نطاق آيات يحقق الحد الأدنى 30 ثانية
+            # نختار سورة ونوسّع النطاق لحد ما نوصل 30 ثانية
+            fb_found = False
+            fb_attempts = 0
+            while fb_attempts < 30 and not fb_found:
+                fb_attempts += 1
+                surah = random.randint(1, 114)
+                verse_count = VERSE_COUNTS.get(surah, 20)
+                start = random.randint(1, max(1, verse_count))
+                
+                # نوسّع النطاق آية آية لحد ما نوصل 30 ثانية
+                fb_end = start
+                fb_reciter = random.choice(reciter_list) if reciter_list else None
+                while fb_end <= verse_count:
+                    fb_est = estimate_ayah_duration_ms(surah, start, fb_end, fb_reciter)
+                    if fb_est >= MIN_DURATION_MS:
+                        fb_end_final = fb_end
+                        # نتأكد إنه مش أكتر من 60 ثانية
+                        if fb_est > MAX_DURATION_MS:
+                            fb_end_final = fb_end - 1 if fb_end > start else fb_end
+                            fb_est = estimate_ayah_duration_ms(surah, start, fb_end_final, fb_reciter)
+                        range_key = f"{surah}:{start}-{fb_end_final}"
+                        if range_key not in used_ranges:
+                            reciter = random.choice(reciter_list) if reciter_list else ''
+                            used_ranges.add(range_key)
+                            items.append({
+                                'surah': surah,
+                                'startAyah': start,
+                                'endAyah': fb_end_final,
+                                'reciter': reciter
+                            })
+                            fb_found = True
                         break
+                    fb_end += 1
     
     return items
 
@@ -1023,8 +1036,17 @@ def process_auto_publish(ap_id):
                     item_reciter = item.get('reciter', '') or reciter_id
                     item_reciter_name = RECITER_DISPLAY_NAME.get(item_reciter, item_reciter)
                     
-                    title = generate_youtube_title(surah, start_ayah, end_ayah, title_template, item_reciter_name)
-                    description = generate_youtube_description(surah, start_ayah, end_ayah, desc_template, item_reciter_name)
+                    # استخدام النطاق الموسّع من الـ config (لو تم توسيعه)
+                    title_end_ayah = end_ayah
+                    if updated_job and updated_job.get('config_json'):
+                        try:
+                            uc = json.loads(updated_job['config_json'])
+                            title_end_ayah = uc.get('endAyah', end_ayah)
+                        except:
+                            pass
+                    
+                    title = generate_youtube_title(surah, start_ayah, title_end_ayah, title_template, item_reciter_name)
+                    description = generate_youtube_description(surah, start_ayah, title_end_ayah, desc_template, item_reciter_name)
                     
                     print(f"[AutoPublish] [{i+1}/{total}] Uploading to YouTube: {title[:50]}...")
                     
@@ -1840,8 +1862,42 @@ def build_video_task(job_id, user_pexels_key, reciter_id, surah, start, end, qua
         target_w, target_h = (1080, 1920) if quality == '1080' else (720, 1280)
     
     scale = 1.0 if quality == '1080' else 0.67
-    last = min(end if end else start+9, VERSE_COUNTS.get(surah, 286))
+    max_ayah_in_surah = VERSE_COUNTS.get(surah, 286)
+    last = min(end if end else start+9, max_ayah_in_surah)
     total_ayahs = (last - start) + 1
+    
+    # ✅ التحقق من المدة المقدرة وتوسيع النطاق تلقائياً لو أقل من 30 ثانية
+    MIN_VIDEO_DURATION_SEC = 30.0
+    MAX_VIDEO_DURATION_MS = 58000
+    original_end = last  # حفظ النطاق الأصلي
+    while True:
+        est_total_ms = estimate_ayah_duration_ms(surah, start, last, reciter_id)
+        if est_total_ms / 1000.0 >= MIN_VIDEO_DURATION_SEC:
+            break  # المدة كويسة
+        if last >= max_ayah_in_surah:
+            break  # وصلنا لآخر سورة
+        # نوسع النطاق آية آية لحد ما نوصل 30 ثانية أو آخر سورة
+        last += 1
+        # لو تعدى الحد الأقصى (60 ثانية) نوقف
+        est_total_ms = estimate_ayah_duration_ms(surah, start, last, reciter_id)
+        if est_total_ms > MAX_VIDEO_DURATION_MS:
+            last -= 1
+            break
+    total_ayahs = (last - start) + 1
+    print(f"[Duration] Ayah range expanded to {start}-{last} ({total_ayahs} ayahs, est {est_total_ms/1000:.1f}s)")
+    
+    # تحديث الـ config في الـ DB لو اتوسّع النطاق (عشان العنوان يكون صح)
+    if last != original_end:
+        try:
+            db_job_config = db_get_job(job_id)
+            if db_job_config and db_job_config.get('config_json'):
+                cfg = json.loads(db_job_config['config_json'])
+                cfg['endAyah'] = last
+                cfg['originalEndAyah'] = original_end  # حفظ الأصلي للرجوع
+                db_update_job(job_id, config_json=json.dumps(cfg))
+                print(f"[Duration] Updated config: endAyah {original_end} -> {last}")
+        except Exception as e:
+            print(f"[Duration] Failed to update config: {e}")
     
     # مصفوفات لتخزين الملفات المفتوحة لإغلاقها في الـ finally لعدم تسريب الذاكرة
     audio_clips_to_close =[]
@@ -2051,19 +2107,15 @@ def build_video_task(job_id, user_pexels_key, reciter_id, surah, start, end, qua
 
         update_job_status(job_id, 85, "Merging All Chunks...")
         
-        # 🧪 تجربة: فصل الصوت والفيديو ودمجهم بشكل منفصل
-        # نجمع audio clips لوحدها
+        # فصل الصوت والفيديو ودمجهم بشكل منفصل
         audio_clips = [seg.audio for seg in final_segments]
-        
-        # ندمج الصوت بـ concatenate_audioclips (أدق في التعامل مع الصوت)
         merged_audio = concatenate_audioclips(audio_clips)
         
         # نشيل الصوت من الفيديو clips وندمج الفيديو لوحده
-        # استخدام method="chain" بدل "compose" لتجنب overlap تلقائي
         video_clips_no_audio = [seg.set_audio(None) for seg in final_segments]
         final_video = concatenate_videoclips(video_clips_no_audio, method="chain")
         
-        # نربط الصوت المدمج الجديد بالفيديو
+        # نربط الصوت المدمج بالفيديو
         final_video = final_video.set_audio(merged_audio)
         
         # ✅ Fade للصوت معطل مؤقتاً - يمكن يسبب مشاكل في الدمج
@@ -2127,7 +2179,7 @@ def build_video_task(job_id, user_pexels_key, reciter_id, surah, start, end, qua
                 config = json.loads(db_job['config_json'])
                 surah = config.get('surah', 1)
                 start_ayah = config.get('startAyah', 1)
-                end_ayah = config.get('endAyah', start_ayah)
+                end_ayah = last  # استخدام النطاق الموسّع (لو تم توسيعه)
                 reciter_id = config.get('reciter', 'Unknown')
                 quality = config.get('quality', '720')
                 fps = config.get('fps', '20')
