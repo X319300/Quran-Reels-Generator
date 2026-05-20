@@ -1849,10 +1849,43 @@ def build_video_task(job_id, user_pexels_key, reciter_id, surah, start, end, qua
     final_segments =[]
 
     try:
-        # 1. Fetch Backgrounds
-        vpool = fetch_video_pool(user_pexels_key, bg_query, count=total_ayahs if dynamic_bg else 1, job_id=job_id, aspect_ratio=aspect_ratio)
+        # 1. Estimate ayah durations and group them for smart background changes
+        MIN_BG_DURATION_SEC = 6.0  # minimum seconds per background
         
-        # 2. Prepare Base Background
+        ayah_est_durations = []
+        for ayah in range(start, last+1):
+            est_ms = estimate_ayah_duration_ms(surah, ayah, ayah, reciter_id)
+            ayah_est_durations.append(est_ms / 1000.0)
+        
+        # Group consecutive ayahs: accumulate until total >= MIN_BG_DURATION
+        ayah_groups = []  # list of lists: [[ayah_idx, ...], ...]
+        current_group = []
+        current_group_dur = 0.0
+        for idx in range(len(ayah_est_durations)):
+            current_group.append(idx)
+            current_group_dur += ayah_est_durations[idx]
+            if current_group_dur >= MIN_BG_DURATION_SEC:
+                ayah_groups.append(current_group)
+                current_group = []
+                current_group_dur = 0.0
+        if current_group:
+            if ayah_groups:
+                ayah_groups[-1].extend(current_group)  # merge last group if too small
+            else:
+                ayah_groups.append(current_group)
+        
+        # Build mapping: ayah_index -> group_index
+        ayah_to_group = {}
+        for g_idx, group in enumerate(ayah_groups):
+            for a_idx in group:
+                ayah_to_group[a_idx] = g_idx
+        num_groups = len(ayah_groups)
+        print(f"[BG Groups] {total_ayahs} ayahs → {num_groups} background groups")
+        
+        # 2. Fetch Backgrounds (one per group instead of one per ayah)
+        vpool = fetch_video_pool(user_pexels_key, bg_query, count=num_groups if dynamic_bg else 1, job_id=job_id, aspect_ratio=aspect_ratio)
+        
+        # 3. Prepare Base Background (fallback)
         if not vpool:
             base_bg_clip = ColorClip((target_w, target_h), color=(15, 20, 35))
         else:
@@ -1873,8 +1906,11 @@ def build_video_task(job_id, user_pexels_key, reciter_id, surah, start, end, qua
             overlays_static.append(create_vignette_mask(target_w, target_h))
 
         current_bg_time = 0.0
+        current_group_idx = -1  # Track which group we're on
+        ayah_bg_clip = None     # Current group's background clip
+        ayah_bg_time = 0.0
         
-        # 4. معالجة الآيات 
+        # 5. معالجة الآيات 
         for i, ayah in enumerate(range(start, last+1)):
             check_stop(job_id)
             update_job_status(job_id, int((i / total_ayahs) * 80), f'Processing Ayah {ayah}...')
@@ -1913,9 +1949,16 @@ def build_video_task(job_id, user_pexels_key, reciter_id, surah, start, end, qua
             
             current_audio_time = 0.0
             
-            # فتح فيديو الخلفية مرة واحدة للآية (إذا كان متغيراً) لتقليل استهلاك الرام
-            if dynamic_bg and i < len(vpool):
-                ayah_raw = VideoFileClip(vpool[i % len(vpool)])
+            # فتح فيديو الخلفية عند تغيير المجموعة (مش كل آية)
+            group_idx = ayah_to_group.get(i, 0)
+            is_first_in_group = (ayah_groups[group_idx][0] == i)
+            is_last_in_group = (ayah_groups[group_idx][-1] == i)
+            
+            if dynamic_bg and group_idx != current_group_idx and group_idx < len(vpool):
+                # Close previous bg clip to free memory
+                if ayah_bg_clip and ayah_bg_clip not in video_clips_to_close:
+                    ayah_bg_clip.close()
+                ayah_raw = VideoFileClip(vpool[group_idx % len(vpool)])
                 # ✅ resize حسب الأبعاد
                 if aspect_ratio == '16:9':
                     ayah_raw = ayah_raw.resize(width=target_w)
@@ -1924,6 +1967,7 @@ def build_video_task(job_id, user_pexels_key, reciter_id, surah, start, end, qua
                 ayah_bg_clip = ayah_raw.crop(width=target_w, height=target_h, x_center=ayah_raw.w/2, y_center=ayah_raw.h/2)
                 video_clips_to_close.append(ayah_bg_clip)
                 ayah_bg_time = 0.0
+                current_group_idx = group_idx
 
             # الدوران على قطع الآية (السطور)
             # الدوران على قطع الآية (السطور)
@@ -1979,13 +2023,13 @@ def build_video_task(job_id, user_pexels_key, reciter_id, surah, start, end, qua
                 ec = ec.set_position(('center', ar_y_pos + ac.h + (2 * scale)))
 
                 # و. معالجة الخلفية للقطعة (نستخدم actual_duration)
-                # ✅ الخلفية تتغير فقط بين الآيات (مش كل سطر)
-                if dynamic_bg and i < len(vpool):
+                # ✅ الخلفية تتغير فقط بين المجموعات (مش كل آية)
+                if dynamic_bg and ayah_bg_clip is not None:
                     bg_slice = ayah_bg_clip.loop().subclip(ayah_bg_time, ayah_bg_time + actual_duration)
-                    # ✅ Fade للخلفية فقط بين الآيات (أول وآخر chunk في الآية كلها)
-                    if is_first_chunk: 
+                    # ✅ Fade للخلفية فقط عند حدود المجموعة (أول chunk أول آية + آخر chunk آخر آية)
+                    if is_first_chunk and is_first_in_group: 
                         bg_slice = bg_slice.fadein(0.5)
-                    if is_last_chunk: 
+                    if is_last_chunk and is_last_in_group: 
                         bg_slice = bg_slice.fadeout(0.5)
                     ayah_bg_time += actual_duration
                 else:
