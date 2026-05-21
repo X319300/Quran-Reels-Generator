@@ -2350,49 +2350,257 @@ def build_video_task(job_id, user_pexels_key, reciter_id, surah, start, end, qua
         else:
             if os.path.exists(temp_mix_path): os.remove(temp_mix_path)
 
-        # ✅ 7. فحص المدة النهائية وقص لو تعدت 59 ثانية (للـ Shorts/Reels)
-        MAX_VIDEO_DURATION = 59.0  # أقصى مدة للـ Shorts
-        try:
-            actual_duration = final_video.duration
-            print(f"[Duration] Estimated vs Actual: check after render")
+        # ✅ 7. فحص المدة النهائية - لو أكتر من 59 ثانية نعيد بآيات أقل
+        MAX_VIDEO_DURATION = 59.0
+        probe_cmd = f'ffprobe -v error -show_entries format=duration -of csv=p=0 "{final_output_path}"'
+        probe_result = os.popen(probe_cmd).read().strip()
+        
+        if probe_result:
+            file_duration = float(probe_result)
+            print(f"[Duration] Actual: {file_duration:.1f}s (limit: {MAX_VIDEO_DURATION}s, ayahs: {start}-{last})")
             
-            # نحسب المدة الفعلية من ملف الفيديو النهائي (أدق)
-            probe_cmd = f'ffprobe -v error -show_entries format=duration -of csv=p=0 "{final_output_path}"'
-            probe_result = os.popen(probe_cmd).read().strip()
-            if probe_result:
-                file_duration = float(probe_result)
-                print(f"[Duration] File duration: {file_duration:.1f}s (limit: {MAX_VIDEO_DURATION}s)")
+            if file_duration > MAX_VIDEO_DURATION and last > start:
+                # 🔄 الفيديو أطول من المسموح - نعمله تاني بآية أقل
+                shrink_rounds = 0
+                max_shrink_rounds = 10  # أقصى عدد محاولات التصغير
                 
-                if file_duration > MAX_VIDEO_DURATION:
-                    print(f"[Duration] ⚠️ Video exceeds {MAX_VIDEO_DURATION}s! Trimming to {MAX_VIDEO_DURATION}s...")
-                    trimmed_path = os.path.join(workspace, f"trimmed_{job_id}.mp4")
+                while file_duration > MAX_VIDEO_DURATION and last > start and shrink_rounds < max_shrink_rounds:
+                    shrink_rounds += 1
                     
-                    # قص الفيديو للحد الأقصى مع fade ناعم في النهاية
-                    trim_cmd = (
-                        f'ffmpeg -y -i "{final_output_path}" '
-                        f'-t {MAX_VIDEO_DURATION} '
-                        f'-af "afade=t=out:st={MAX_VIDEO_DURATION - 1.5}:d=1.5" '  # fade صوتي ناعم
-                        f'-vf "fade=t=out:st={MAX_VIDEO_DURATION - 1.0}:d=1.0" '     # fade بصري ناعم
-                        f'-c:v libx264 -preset ultrafast -crf 24 '
-                        f'-c:a aac -b:a 128k '
-                        f'"{trimmed_path}"'
+                    # نحسب كم آية لازم نشيل بناءً على الزيادة
+                    overshoot_ratio = file_duration / MAX_VIDEO_DURATION
+                    remove_count = max(1, int((last - start + 1) * (1 - 1.0 / overshoot_ratio)))
+                    new_last = max(start, last - remove_count)
+                    
+                    if new_last == last:
+                        new_last = last - 1  # على الأقل نشيل آية واحدة
+                    
+                    print(f"[Duration] ⚠️ Too long ({file_duration:.1f}s)! Retrying with ayahs {start}-{new_last} (removed {last - new_last})")
+                    
+                    # مسح الملفات القديمة
+                    if os.path.exists(final_output_path):
+                        os.remove(final_output_path)
+                    
+                    # مسح ملفات الصوت القديمة
+                    for old_ayah in range(new_last + 1, last + 1):
+                        old_audio = os.path.join(workspace, f"ayah_{old_ayah}.mp3")
+                        if os.path.exists(old_audio):
+                            os.remove(old_audio)
+                    
+                    # تحديث النطاق
+                    last = new_last
+                    total_ayahs = (last - start) + 1
+                    
+                    # تحديث الـ config في الـ DB
+                    try:
+                        cfg = json.loads(db_get_job(job_id)['config_json'])
+                        cfg['endAyah'] = last
+                        db_update_job(job_id, config_json=json.dumps(cfg))
+                    except:
+                        pass
+                    
+                    # 🔄 إعادة التصنيع من الخطوة 5 (معالجة الآيات)
+                    # نعيد حساب المجموعات
+                    ayah_est_durations_retry = []
+                    for ayah in range(start, last+1):
+                        est_ms = estimate_ayah_duration_ms(surah, ayah, ayah, reciter_id)
+                        ayah_est_durations_retry.append(est_ms / 1000.0)
+                    
+                    ayah_groups = []
+                    current_group = []
+                    current_group_dur = 0.0
+                    for idx in range(len(ayah_est_durations_retry)):
+                        current_group.append(idx)
+                        current_group_dur += ayah_est_durations_retry[idx]
+                        if current_group_dur >= 6.0:
+                            ayah_groups.append(current_group)
+                            current_group = []
+                            current_group_dur = 0.0
+                    if current_group:
+                        if ayah_groups:
+                            ayah_groups[-1].extend(current_group)
+                        else:
+                            ayah_groups.append(current_group)
+                    
+                    ayah_to_group = {}
+                    for g_idx, group in enumerate(ayah_groups):
+                        for a_idx in group:
+                            ayah_to_group[a_idx] = g_idx
+                    
+                    current_group_idx = -1
+                    ayah_bg_clip = None
+                    ayah_bg_time = 0.0
+                    current_bg_time = 0.0
+                    final_segments = []
+                    
+                    update_job_status(job_id, 70, f'Retrying with {start}-{last} ({total_ayahs} ayahs)...')
+                    
+                    for i, ayah in enumerate(range(start, last+1)):
+                        check_stop(job_id)
+                        update_job_status(job_id, int((i / total_ayahs) * 80) + 10, f'Retry: Ayah {ayah}...')
+                        
+                        try:
+                            ap = download_audio(reciter_id, surah, ayah, i, workspace, job_id)
+                            if not os.path.exists(ap):
+                                raise Exception(f"Audio not found: {ap}")
+                            full_audioclip = AudioFileClip(ap)
+                            if full_audioclip.duration <= 0:
+                                raise Exception("Invalid duration")
+                            audio_clips_to_close.append(full_audioclip)
+                        except Exception as audio_err:
+                            print(f"[Retry] Skipping ayah {ayah}: {audio_err}")
+                            continue
+                        
+                        full_ar_text = get_text(surah, ayah)
+                        full_en_text = get_en_text(surah, ayah)
+                        if not full_ar_text or full_ar_text == "Text Error":
+                            continue
+                        
+                        ar_chunks = split_into_chunks(full_ar_text, words_per_chunk=5)
+                        if not ar_chunks:
+                            continue
+                        
+                        en_words = full_en_text.split()
+                        avg_en_per_ar = len(en_words) / len(ar_chunks) if ar_chunks else 0
+                        current_audio_time = 0.0
+                        
+                        group_idx = ayah_to_group.get(i, 0)
+                        is_first_in_group = (ayah_groups[group_idx][0] == i)
+                        is_last_in_group = (ayah_groups[group_idx][-1] == i)
+                        
+                        if dynamic_bg and group_idx != current_group_idx and group_idx < len(vpool):
+                            if ayah_bg_clip and ayah_bg_clip not in video_clips_to_close:
+                                ayah_bg_clip.close()
+                            ayah_raw = VideoFileClip(vpool[group_idx % len(vpool)])
+                            if aspect_ratio == '16:9':
+                                ayah_raw = ayah_raw.resize(width=target_w)
+                            else:
+                                ayah_raw = ayah_raw.resize(height=target_h)
+                            ayah_bg_clip = ayah_raw.crop(width=target_w, height=target_h, x_center=ayah_raw.w/2, y_center=ayah_raw.h/2)
+                            video_clips_to_close.append(ayah_bg_clip)
+                            ayah_bg_time = 0.0
+                            current_group_idx = group_idx
+                        
+                        for chunk_idx, ar_chunk in enumerate(ar_chunks):
+                            if chunk_idx == len(ar_chunks) - 1:
+                                t_end = full_audioclip.duration
+                            else:
+                                ratio = len(ar_chunk.replace(" ", "")) / max(1, len(full_ar_text.replace(" ", "")))
+                                t_end = min(current_audio_time + (ratio * full_audioclip.duration), full_audioclip.duration)
+                            
+                            if t_end - current_audio_time <= 0.05:
+                                t_end = min(current_audio_time + 0.1, full_audioclip.duration)
+                            
+                            chunk_audio = full_audioclip.subclip(current_audio_time, t_end)
+                            actual_duration = chunk_audio.duration
+                            if actual_duration <= 0: continue
+                            
+                            start_en = int(chunk_idx * avg_en_per_ar)
+                            end_en = int((chunk_idx + 1) * avg_en_per_ar)
+                            if chunk_idx == len(ar_chunks) - 1:
+                                en_chunk = " ".join(en_words[start_en:])
+                                display_ar = f"{ar_chunk} ﴿{to_arabic_numeral(ayah)}﴾"
+                            else:
+                                en_chunk = " ".join(en_words[start_en:end_en])
+                                display_ar = ar_chunk
+                            
+                            ac = create_text_clip(display_ar, actual_duration, target_w, scale, use_glow, style=style, font_path=font_path)
+                            ec = create_english_clip(en_chunk, actual_duration, target_w, scale, use_glow, style=style, font_path=font_path_en)
+                            
+                            TEXT_FADE = 0.35
+                            ac = ac.crossfadein(TEXT_FADE).crossfadeout(TEXT_FADE)
+                            ec = ec.crossfadein(TEXT_FADE).crossfadeout(TEXT_FADE)
+                            
+                            is_first_chunk = (chunk_idx == 0)
+                            is_last_chunk = (chunk_idx == len(ar_chunks) - 1)
+                            
+                            ar_size_mult = float(style.get('arSize', '1.0'))
+                            base_y = 0.35 if ar_size_mult <= 1.2 else 0.30
+                            ar_y_pos = target_h * base_y
+                            ac = ac.set_position(('center', ar_y_pos))
+                            ec = ec.set_position(('center', ar_y_pos + ac.h + (2 * scale)))
+                            
+                            if dynamic_bg and ayah_bg_clip is not None:
+                                bg_slice = ayah_bg_clip.loop().subclip(ayah_bg_time, ayah_bg_time + actual_duration)
+                                if is_first_chunk and is_first_in_group:
+                                    bg_slice = bg_slice.fadein(0.5)
+                                if is_last_chunk and is_last_in_group:
+                                    bg_slice = bg_slice.fadeout(0.5)
+                                ayah_bg_time += actual_duration
+                            else:
+                                bg_slice = base_bg_clip.loop().subclip(current_bg_time, current_bg_time + actual_duration)
+                                current_bg_time += actual_duration
+                            
+                            segment_overlays = [o.set_duration(actual_duration) for o in overlays_static]
+                            full_segment = CompositeVideoClip([bg_slice] + segment_overlays + [ac, ec]).set_audio(chunk_audio)
+                            final_segments.append(full_segment)
+                            current_audio_time = t_end
+                    
+                    if not final_segments:
+                        raise Exception("No segments generated after retry")
+                    
+                    # إعادة الدمج والرندر
+                    update_job_status(job_id, 85, "Re-merging...")
+                    merged_audio = concatenate_audioclips([seg.audio for seg in final_segments])
+                    video_clips_no_audio = [seg.set_audio(None) for seg in final_segments]
+                    final_video = concatenate_videoclips(video_clips_no_audio, method="chain")
+                    final_video = final_video.set_audio(merged_audio)
+                    
+                    update_job_status(job_id, 90, "Re-rendering...")
+                    final_video.write_videofile(
+                        temp_mix_path,
+                        fps=fps,
+                        codec='libx264',
+                        audio_codec='aac',
+                        audio_bitrate='128k',
+                        preset=preset_value,
+                        threads=os.cpu_count() or 4,
+                        ffmpeg_params=['-crf', str(crf_value)],
+                        logger=ScopedQuranLogger(job_id)
                     )
                     
-                    if os.system(trim_cmd) == 0 and os.path.exists(trimmed_path):
-                        # استبدال الملف الأصلي بالمقصوص
-                        os.remove(final_output_path)
-                        shutil.move(trimmed_path, final_output_path)
-                        
-                        # التحقق من المدة بعد القص
-                        probe2 = os.popen(f'ffprobe -v error -show_entries format=duration -of csv=p=0 "{final_output_path}"').read().strip()
-                        new_duration = float(probe2) if probe2 else 0
-                        print(f"[Duration] ✅ Trimmed successfully: {new_duration:.1f}s")
+                    # معالجة الصوت
+                    update_job_status(job_id, 98, "Re-mastering...")
+                    cmd = (
+                        f'ffmpeg -y -i "{temp_mix_path}" '
+                        f'-af "{STUDIO_DRY_FILTER}" '
+                        f'-c:v copy -c:a aac -b:a 128k '
+                        f'"{final_output_path}"'
+                    )
+                    if os.system(cmd) != 0:
+                        shutil.move(temp_mix_path, final_output_path)
                     else:
-                        print(f"[Duration] ❌ Trim failed, keeping original ({file_duration:.1f}s)")
-                elif file_duration < 30:
-                    print(f"[Duration] ⚠️ Video is shorter than 30s: {file_duration:.1f}s (this shouldn't happen)")
-        except Exception as e:
-            print(f"[Duration] Check failed (non-critical): {e}")
+                        if os.path.exists(temp_mix_path):
+                            os.remove(temp_mix_path)
+                    
+                    # فحص المدة مرة تانية
+                    probe_result = os.popen(probe_cmd).read().strip()
+                    if probe_result:
+                        file_duration = float(probe_result)
+                        print(f"[Duration] After retry {shrink_rounds}: {file_duration:.1f}s (ayahs: {start}-{last})")
+            
+            if file_duration > MAX_VIDEO_DURATION and last <= start:
+                # آية واحدة وطويلة جداً - نقصها (موقف آخر)
+                print(f"[Duration] ⚠️ Single ayah is {file_duration:.1f}s! Trimming to {MAX_VIDEO_DURATION}s...")
+                trimmed_path = os.path.join(workspace, f"trimmed_{job_id}.mp4")
+                trim_cmd = (
+                    f'ffmpeg -y -i "{final_output_path}" '
+                    f'-t {MAX_VIDEO_DURATION} '
+                    f'-af "afade=t=out:st={MAX_VIDEO_DURATION - 1.5}:d=1.5" '
+                    f'-vf "fade=t=out:st={MAX_VIDEO_DURATION - 1.0}:d=1.0" '
+                    f'-c:v libx264 -preset ultrafast -crf 24 '
+                    f'-c:a aac -b:a 128k '
+                    f'"{trimmed_path}"'
+                )
+                if os.system(trim_cmd) == 0 and os.path.exists(trimmed_path):
+                    os.remove(final_output_path)
+                    shutil.move(trimmed_path, final_output_path)
+                    file_duration = MAX_VIDEO_DURATION
+                    print(f"[Duration] ✅ Trimmed to {file_duration:.1f}s (single long ayah)")
+            
+            print(f"[Duration] ✅ Final duration: {file_duration:.1f}s (ayahs: {start}-{last})")
+        else:
+            print(f"[Duration] Could not probe duration (non-critical)")
 
         with JOBS_LOCK: 
             if job_id in JOBS:
