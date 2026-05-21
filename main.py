@@ -2350,6 +2350,50 @@ def build_video_task(job_id, user_pexels_key, reciter_id, surah, start, end, qua
         else:
             if os.path.exists(temp_mix_path): os.remove(temp_mix_path)
 
+        # ✅ 7. فحص المدة النهائية وقص لو تعدت 59 ثانية (للـ Shorts/Reels)
+        MAX_VIDEO_DURATION = 59.0  # أقصى مدة للـ Shorts
+        try:
+            actual_duration = final_video.duration
+            print(f"[Duration] Estimated vs Actual: check after render")
+            
+            # نحسب المدة الفعلية من ملف الفيديو النهائي (أدق)
+            probe_cmd = f'ffprobe -v error -show_entries format=duration -of csv=p=0 "{final_output_path}"'
+            probe_result = os.popen(probe_cmd).read().strip()
+            if probe_result:
+                file_duration = float(probe_result)
+                print(f"[Duration] File duration: {file_duration:.1f}s (limit: {MAX_VIDEO_DURATION}s)")
+                
+                if file_duration > MAX_VIDEO_DURATION:
+                    print(f"[Duration] ⚠️ Video exceeds {MAX_VIDEO_DURATION}s! Trimming to {MAX_VIDEO_DURATION}s...")
+                    trimmed_path = os.path.join(workspace, f"trimmed_{job_id}.mp4")
+                    
+                    # قص الفيديو للحد الأقصى مع fade ناعم في النهاية
+                    trim_cmd = (
+                        f'ffmpeg -y -i "{final_output_path}" '
+                        f'-t {MAX_VIDEO_DURATION} '
+                        f'-af "afade=t=out:st={MAX_VIDEO_DURATION - 1.5}:d=1.5" '  # fade صوتي ناعم
+                        f'-vf "fade=t=out:st={MAX_VIDEO_DURATION - 1.0}:d=1.0" '     # fade بصري ناعم
+                        f'-c:v libx264 -preset ultrafast -crf 24 '
+                        f'-c:a aac -b:a 128k '
+                        f'"{trimmed_path}"'
+                    )
+                    
+                    if os.system(trim_cmd) == 0 and os.path.exists(trimmed_path):
+                        # استبدال الملف الأصلي بالمقصوص
+                        os.remove(final_output_path)
+                        shutil.move(trimmed_path, final_output_path)
+                        
+                        # التحقق من المدة بعد القص
+                        probe2 = os.popen(f'ffprobe -v error -show_entries format=duration -of csv=p=0 "{final_output_path}"').read().strip()
+                        new_duration = float(probe2) if probe2 else 0
+                        print(f"[Duration] ✅ Trimmed successfully: {new_duration:.1f}s")
+                    else:
+                        print(f"[Duration] ❌ Trim failed, keeping original ({file_duration:.1f}s)")
+                elif file_duration < 30:
+                    print(f"[Duration] ⚠️ Video is shorter than 30s: {file_duration:.1f}s (this shouldn't happen)")
+        except Exception as e:
+            print(f"[Duration] Check failed (non-critical): {e}")
+
         with JOBS_LOCK: 
             if job_id in JOBS:
                 JOBS[job_id].update({'output_path': final_output_path, 'is_complete': True, 'is_running': False, 'percent': 100, 'status': "complete"})
