@@ -718,37 +718,13 @@ def generate_random_schedule(total_videos, schedule_config):
 
 def calculate_upload_delay(total_videos, schedule_config, current_index):
     """
-    حساب التأخير المناسب بين الـ uploads عشان نحترم YouTube API limits.
+    حساب التأخير المناسب بين الـ uploads.
     
-    YouTube Data API v3 quota:
-    - videos.insert = 1,600 units لكل فيديو
-    - الحد اليومي = 10,000 units (default) = ~6 فيديوهات/يوم
-    
-    الاستراتيجية:
-    - لو عدد الفيديوهات <= 6: تأخير 30 ثانية (مفيش مشكلة)
-    - لو أكتر: نوزع على فترة الـ spread_days
-    - الحد الأدنى للتأخير = 60 ثانية
+    ⚡ بما إن الفيديوهات بتتسجل (scheduled) مش بتتنشر فوراً،
+    مفيش داعي لتأخير كبير. التأخير الصغير بس عشان rate limiting.
     """
-    spread_days = schedule_config.get('spreadDays', 7)
-    
-    # لو عدد الفيديوهات قليل، تأخير بسيط بس عشان الـ rate limiting
-    if total_videos <= 6:
-        return 30  # 30 ثانية بين كل upload
-    
-    # حساب إجمالي الثواني المتاحة للـ spread
-    total_spread_seconds = spread_days * 24 * 3600
-    
-    # حساب التأخير بين كل فيديو
-    delay = total_spread_seconds / total_videos
-    
-    # الحد الأدنى 60 ثانية والحد الأقصى 30 دقيقة
-    delay = max(60, min(delay, 1800))
-    
-    # لو في فيديو واحد باقي، مفيش داعي للتأخير
-    if current_index >= total_videos - 1:
-        return 0
-    
-    return delay
+    # تأخير ثابت صغير بين كل فيديو
+    return 10
 
 def estimate_ayah_duration_ms(surah, start_ayah, end_ayah, reciter_name=None):
     """
