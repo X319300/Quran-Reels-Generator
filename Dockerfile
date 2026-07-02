@@ -27,7 +27,7 @@ RUN echo '<policymap> \
 RUN useradd -m -u 1000 user
 
 # 5. سحب الكود (أول خطوة في التعامل مع الملفات عشان الفولدر يكون فاضي)
-RUN git clone https://github.com/AliMahmoudDev/Quran-Reels-Generator.git .
+RUN git clone https://github.com/X319300/Quran-Reels-Generator.git .
 
 # 6. تثبيت المكتبات
 RUN pip install --no-cache-dir -r requirements.txt
