@@ -1726,7 +1726,7 @@ def get_text(surah, ayah):
     except: return "Text Error"
 
 def get_en_text(surah, ayah):
-    try: return requests.get(f'http://api.alquran.cloud/v1/ayah/{surah}:{ayah}/en.sahih').json()['data']['text']
+    try: return requests.get(f'http://api.alquran.cloud/v1/ayah/{surah}:{ayah}/tr.diyanet').json()['data']['text']
     except: return ""
 
 # 🆕 دالة تقطيع النصوص للريلز (5 كلمات كحد أقصى للسطر)
